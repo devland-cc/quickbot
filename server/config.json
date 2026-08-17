@@ -1,0 +1,14 @@
+{
+  "draftModel": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-MTP-4bit",
+  "envVars": {
+    "APC_ENABLED": "1"
+  },
+  "executable": "/Users/danieldrehmer/Devland/_experimental/quickbot/server/.venv/bin/mlx_vlm.server",
+  "extraArgs": [],
+  "healthPath": "/health",
+  "host": "127.0.0.1",
+  "logFile": "~/Library/Logs/Quickbot/server.log",
+  "model": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-4bit",
+  "port": 8080,
+  "stopServerOnQuit": false
+}

@@ -1,0 +1,9 @@
+#!/bin/bash
+# Entry point for the Quickbot server controller.
+# Prefers the bundled venv's Python; falls back to system python3
+# (serverctl.py only uses the standard library).
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="python3"
+exec "$PY" "$DIR/serverctl.py" "$@"

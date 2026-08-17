@@ -1,0 +1,33 @@
+#!/bin/bash
+# Controls the Quickbot server from the command line (useful for shortcuts
+# and automations). Thin wrapper over the server component's serverctl —
+# the menu bar app does not need to be running.
+#
+#   quickbot on | off | toggle | status | health | log
+set -euo pipefail
+
+SERVER_DIR="${QUICKBOT_SERVER_DIR:-$HOME/Devland/_experimental/quickbot/server}"
+SERVERCTL="$SERVER_DIR/serverctl"
+
+if [ ! -x "$SERVERCTL" ]; then
+  echo "serverctl not found: $SERVERCTL" >&2
+  exit 1
+fi
+
+case "${1:-status}" in
+  on|start|off|stop|toggle|health|log)
+    exec "$SERVERCTL" "$1"
+    ;;
+  status)
+    if pgrep -f "Quickbot.app/Contents/MacOS/Quickbot" >/dev/null 2>&1; then
+      echo "App:      running"
+    else
+      echo "App:      stopped"
+    fi
+    exec "$SERVERCTL" status
+    ;;
+  *)
+    echo "usage: quickbot {on|off|toggle|status|health|log}" >&2
+    exit 2
+    ;;
+esac

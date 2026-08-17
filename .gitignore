@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+models/
+server/.venv/
+server/.server.pid
+native-app/menu-bar/build/
+native-app/chat/.build/
+native-app/chat/build/

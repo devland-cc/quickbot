@@ -1,4 +1,5 @@
 {
+  "backend": "mlx",
   "draftModel": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-MTP-4bit",
   "envVars": {
     "APC_ENABLED": "1"
@@ -9,6 +10,15 @@
   "host": "127.0.0.1",
   "logFile": "~/Library/Logs/Quickbot/server.log",
   "model": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-4bit",
+  "ollamaEnvVars": {
+    "OLLAMA_FLASH_ATTENTION": "1",
+    "OLLAMA_KEEP_ALIVE": "1h"
+  },
+  "ollamaExecutable": "/opt/homebrew/bin/ollama",
+  "ollamaModel": "qwen3.8:27b-mlx",
+  "ollamaPort": 11434,
   "port": 8080,
-  "stopServerOnQuit": false
+  "proxyPort": 8081,
+  "stopServerOnQuit": false,
+  "webSearch": true
 }

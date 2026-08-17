@@ -32,6 +32,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 import websearch
 
 UPSTREAM = os.environ.get("QUICKBOT_UPSTREAM", "http://127.0.0.1:8080")
+# Upstream health endpoint: mlx_vlm.server exposes /health, Ollama answers "/".
+UPSTREAM_HEALTH = os.environ.get("QUICKBOT_UPSTREAM_HEALTH", "/health")
 PORT = int(os.environ.get("QUICKBOT_PROXY_PORT", "8081"))
 WEB_SEARCH_DEFAULT = os.environ.get("QUICKBOT_WEB_SEARCH", "1") not in ("0", "false")
 
@@ -81,7 +83,7 @@ client = httpx.AsyncClient(base_url=UPSTREAM,
 @app.get("/health")
 async def health():
     try:
-        resp = await client.get("/health")
+        resp = await client.get(UPSTREAM_HEALTH)
     except httpx.HTTPError as e:
         return JSONResponse({"error": "upstream unreachable: {}".format(e)},
                             status_code=503)
@@ -158,6 +160,27 @@ def _safe_cut(buf):
         if SENTINEL.startswith(buf[-k:]):
             return len(buf) - k, False
     return len(buf), False
+
+
+def _merge_tool_call_deltas(collected, deltas):
+    """Accumulate streamed OpenAI-style tool_calls deltas into `collected`.
+
+    mlx_vlm.server sends the whole list in one chunk; Ollama streams them
+    as indexed fragments across chunks (the finish_reason arrives later).
+    """
+    for d in deltas:
+        i = d.get("index", len(collected))
+        while len(collected) <= i:
+            collected.append({"id": "", "type": "function",
+                              "function": {"name": "", "arguments": ""}})
+        slot = collected[i]
+        if d.get("id"):
+            slot["id"] = d["id"]
+        fn = d.get("function") or {}
+        if fn.get("name"):
+            slot["function"]["name"] = fn["name"]
+        if fn.get("arguments"):
+            slot["function"]["arguments"] += fn["arguments"]
 
 
 def _queries(tool_calls):
@@ -294,6 +317,7 @@ async def _stream_loop(body):
         if final:
             _final_round(body)
         tool_calls = None
+        collected = []    # structured tool-call deltas accumulated this round
         buf = ""          # content accumulated this round
         sent = 0          # chars of buf already relayed
         capturing = False  # inside raw tool-call XML: withhold from client
@@ -322,8 +346,11 @@ async def _stream_loop(body):
                     if not choice and chunk.get("usage"):
                         yield "data: {}\n\n".format(payload).encode()
                         continue
-                    if finish == "tool_calls" and delta.get("tool_calls"):
-                        tool_calls = delta["tool_calls"]
+                    if delta.get("tool_calls") or finish == "tool_calls":
+                        if delta.get("tool_calls"):
+                            _merge_tool_call_deltas(collected, delta["tool_calls"])
+                        if finish == "tool_calls" and collected:
+                            tool_calls = collected
                         continue  # swallow: the client never sees tool plumbing
                     piece = ""
                     content = delta.get("content")
@@ -337,6 +364,9 @@ async def _stream_loop(body):
                                 sent = cut
                     out_delta = {k: v for k, v in delta.items()
                                  if k != "content" and v is not None}
+                    if "reasoning" in out_delta:
+                        # Ollama's name for what mlx calls reasoning_content.
+                        out_delta["reasoning_content"] = out_delta.pop("reasoning")
                     if piece:
                         out_delta["content"] = piece
                     out_finish = None if capturing else finish
@@ -348,6 +378,8 @@ async def _stream_loop(body):
             yield "data: {}\n\n".format(json.dumps(payload)).encode()
             yield b"data: [DONE]\n\n"
             return
+        if tool_calls is None and collected:
+            tool_calls = collected  # deltas arrived but no tool_calls finish
         if tool_calls is None and capturing:
             tool_calls = _extract_xml_tool_calls(buf) or None
         if tool_calls is None:

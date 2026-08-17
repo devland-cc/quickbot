@@ -58,12 +58,22 @@ final class QuickbotService: @unchecked Sendable {
     }
 
     /// Directory of the Quickbot server component (owns `serverctl`).
+    /// In an installed setup the server ships inside the menu bar app.
     static var serverDirectory: URL {
         if let override = ProcessInfo.processInfo.environment["QUICKBOT_SERVER_DIR"] {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Devland/_experimental/quickbot/server")
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent("Devland/_experimental/quickbot/server"),
+            URL(fileURLWithPath: "/Applications/Quickbot.app/Contents/Resources/server"),
+            home.appendingPathComponent("Applications/Quickbot.app/Contents/Resources/server"),
+        ]
+        for candidate in candidates
+        where FileManager.default.isExecutableFile(atPath: candidate.appendingPathComponent("serverctl").path) {
+            return candidate
+        }
+        return candidates[0]
     }
 
     private struct ServerStatus: Decodable {

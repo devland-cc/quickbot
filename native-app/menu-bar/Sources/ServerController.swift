@@ -49,6 +49,11 @@ enum ServerEnvironment {
         if let env = ProcessInfo.processInfo.environment["QUICKBOT_SERVER_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
         }
+        // Release builds bundle the server component inside the app.
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("server"),
+           FileManager.default.isExecutableFile(atPath: bundled.appendingPathComponent("serverctl").path) {
+            return bundled
+        }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Devland/_experimental/quickbot/server")
     }

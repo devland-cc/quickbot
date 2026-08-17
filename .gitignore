@@ -6,3 +6,5 @@ server/.server.pid
 native-app/menu-bar/build/
 native-app/chat/.build/
 native-app/chat/build/
+server/config.json
+build/

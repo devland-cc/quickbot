@@ -1,9 +1,22 @@
 #!/bin/bash
 # Entry point for the Quickbot server controller.
-# Prefers the bundled venv's Python; falls back to system python3
-# (serverctl.py only uses the standard library).
+# Prefers a venv Python (repo .venv or the user data dir's venv); falls back
+# to system python3 (serverctl.py itself only uses the standard library).
 set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve symlinks so this works when invoked via Homebrew's bin symlink.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  if [[ "$SOURCE" != /* ]]; then SOURCE="$DIR/$SOURCE"; fi
+done
+DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+
+DATA_DIR="${QUICKBOT_DATA_DIR:-$HOME/Library/Application Support/Quickbot}"
 PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="$DATA_DIR/venv/bin/python"
 [ -x "$PY" ] || PY="python3"
+
+export QUICKBOT_CLI_NAME="${QUICKBOT_CLI_NAME:-$(basename "${BASH_SOURCE[0]}")}"
 exec "$PY" "$DIR/serverctl.py" "$@"

@@ -29,11 +29,12 @@ When Quickbot is off, both shortcuts open the menu bar menu instead.
 
 ```sh
 brew tap devland-cc/tap
-brew install --cask --no-quarantine quickbot
+brew install --cask quickbot
 quickbot setup   # installs the Python environment and downloads the models (~16 GB)
 ```
 
-`--no-quarantine` is needed because the apps are ad-hoc signed, not notarized.
+The apps are ad-hoc signed, not notarized; the cask removes the macOS
+quarantine flag after install so Gatekeeper lets them run.
 
 `quickbot setup` downloads the models from their original Hugging Face
 repositories ([mlx-community/Qwen3.8-27B-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit)

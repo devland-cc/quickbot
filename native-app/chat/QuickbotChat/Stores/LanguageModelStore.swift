@@ -30,6 +30,8 @@ final class LanguageModelStore {
         } else {
             selectedModel = nil
         }
+        // Diagnostics: lets `defaults read` confirm a model is selected.
+        UserDefaults.standard.set(selectedModel?.name ?? "", forKey: "selectedModelName")
     }
     
     @MainActor
@@ -48,12 +50,19 @@ final class LanguageModelStore {
     func loadModels() async throws {
         let remoteModels = try await QuickbotService.shared.getModels()
         try await swiftDataService.saveModels(models: remoteModels.map{LanguageModelSD(name: $0.name, imageSupport: $0.imageSupport, modelProvider: .local)})
-        
+
         let storedModels = (try? await swiftDataService.fetchModels()) ?? []
-        
+
         DispatchQueue.main.async {
             let remoteModelNames = remoteModels.map { $0.name }
             self.models = storedModels.filter{remoteModelNames.contains($0.name)}
+
+            // Select a model as soon as the list is known, so the panel
+            // works even if the (hidden) chat window never drove selection.
+            if self.selectedModel == nil {
+                let defaultModel = UserDefaults.standard.string(forKey: "defaultModel") ?? ""
+                self.setModel(modelName: defaultModel)
+            }
         }
     }
     

@@ -22,10 +22,14 @@ struct PromptPanel: View {
     
     @MainActor
     func sendMessage(prompt: String, image: Image?) {
+        guard let model = languageModelStore.selectedModel ?? languageModelStore.models.last else {
+            appStore.uiLog(message: "No model available — is the Quickbot server on?", status: .error)
+            return
+        }
         conversationStore.selectedConversation = nil
         conversationStore.sendPrompt(
             userPrompt: prompt,
-            model: languageModelStore.selectedModel!,
+            model: model,
             image: image,
             systemPrompt: systemPrompt
         )

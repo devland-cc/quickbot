@@ -135,7 +135,13 @@ struct PromptPanelView: View {
         .frame(minWidth: 500, maxWidth: 500)
         .onAppear {
             prompt = ""
+            // The panel is not key yet when onAppear runs (it becomes key
+            // right after, in showPanel), so a focus request now is a no-op.
+            // Retry once the window is key so typing works immediately.
             focused = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                focused = true
+            }
         }
         .onDrop(of: [.image], isTargeted: $fileDropActive, perform: { providers in
             guard let provider = providers.first else { return false }

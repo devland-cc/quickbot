@@ -80,14 +80,22 @@ client = httpx.AsyncClient(base_url=UPSTREAM,
 
 @app.get("/health")
 async def health():
-    resp = await client.get("/health")
+    try:
+        resp = await client.get("/health")
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": "upstream unreachable: {}".format(e)},
+                            status_code=503)
     return Response(content=resp.content, status_code=resp.status_code,
                     media_type=resp.headers.get("content-type"))
 
 
 @app.get("/v1/models")
 async def models():
-    resp = await client.get("/v1/models")
+    try:
+        resp = await client.get("/v1/models")
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": "upstream unreachable: {}".format(e)},
+                            status_code=503)
     return Response(content=resp.content, status_code=resp.status_code,
                     media_type=resp.headers.get("content-type"))
 
@@ -168,30 +176,33 @@ def _queries(tool_calls):
     return queries
 
 
+async def _run_one(call, query, cache):
+    """Execute a single tool call and return its role:"tool" message."""
+    name = (call.get("function") or {}).get("name")
+    if name == "web_search":
+        if not query:
+            result = "Invalid web_search arguments: a 'query' string is required."
+        elif query in cache:
+            print("toolproxy: web_search({!r}) served from cache".format(query),
+                  flush=True)
+            result = cache[query]
+        else:
+            print("toolproxy: web_search({!r})".format(query), flush=True)
+            started = time.time()
+            result = await asyncio.to_thread(websearch.web_search, query)
+            print("toolproxy: web_search done in {:.1f}s, {} chars"
+                  .format(time.time() - started, len(result)), flush=True)
+            cache[query] = result
+    else:
+        result = "Unknown tool: {}".format(name)
+    return {"role": "tool", "tool_call_id": call.get("id"), "content": result}
+
+
 async def _run_tool_calls(tool_calls, cache):
     """Execute tool calls and return the messages to append."""
     appended = [{"role": "assistant", "content": "", "tool_calls": tool_calls}]
     for call, query in zip(tool_calls, _queries(tool_calls)):
-        name = (call.get("function") or {}).get("name")
-        if name == "web_search":
-            if not query:
-                result = "Invalid web_search arguments: a 'query' string is required."
-            elif query in cache:
-                print("toolproxy: web_search({!r}) served from cache".format(query),
-                      flush=True)
-                result = cache[query]
-            else:
-                print("toolproxy: web_search({!r})".format(query), flush=True)
-                started = time.time()
-                result = await asyncio.to_thread(websearch.web_search, query)
-                print("toolproxy: web_search done in {:.1f}s, {} chars"
-                      .format(time.time() - started, len(result)), flush=True)
-                cache[query] = result
-        else:
-            result = "Unknown tool: {}".format(name)
-        appended.append({"role": "tool",
-                         "tool_call_id": call.get("id"),
-                         "content": result})
+        appended.append(await _run_one(call, query, cache))
     return appended
 
 
@@ -270,12 +281,14 @@ async def _stream_loop(body):
     """SSE generator: relays upstream deltas, silently resolving tool calls.
 
     Tool calls are caught both structured (finish_reason == "tool_calls") and
-    as raw <tool_call> XML in the content stream; while a search runs the
-    client sees a short status line instead of a mute spinner.
+    as raw <tool_call> XML in the content stream. Progress is reported
+    through a side-channel the Quickbot apps understand: chunks whose delta
+    carries `quickbot_status` (a short stage description) instead of
+    content, so the transcript itself stays clean. Upstream `usage` chunks
+    (one per round when the client asks for stream_options.include_usage)
+    are relayed for token accounting.
     """
     cache = {}
-    relayed_any = False
-    last_was_status = False
     for round_index in range(MAX_ROUNDS):
         final = round_index == MAX_ROUNDS - 1
         if final:
@@ -284,50 +297,57 @@ async def _stream_loop(body):
         buf = ""          # content accumulated this round
         sent = 0          # chars of buf already relayed
         capturing = False  # inside raw tool-call XML: withhold from client
-        async with client.stream("POST", "/v1/chat/completions",
-                                 json=body) as resp:
-            if resp.status_code != 200:
-                detail = (await resp.aread()).decode("utf-8", "replace")[:500]
-                payload = {"error": {"message": "upstream error: " + detail}}
-                yield "data: {}\n\n".format(json.dumps(payload)).encode()
-                yield b"data: [DONE]\n\n"
-                return
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except ValueError:
-                    continue
-                choice = (chunk.get("choices") or [{}])[0]
-                delta = choice.get("delta") or {}
-                finish = choice.get("finish_reason")
-                if finish == "tool_calls" and delta.get("tool_calls"):
-                    tool_calls = delta["tool_calls"]
-                    continue  # swallow: the client never sees tool plumbing
-                piece = ""
-                content = delta.get("content")
-                if content:
-                    buf += content
-                    if not capturing:
-                        cut, found = _safe_cut(buf)
-                        capturing = capturing or found
-                        if cut > sent:
-                            piece = buf[sent:cut]
-                            sent = cut
-                out_delta = {k: v for k, v in delta.items() if k != "content"}
-                if piece:
-                    out_delta["content"] = piece
-                out_finish = None if capturing else finish
-                if out_delta or out_finish:
+        try:
+            async with client.stream("POST", "/v1/chat/completions",
+                                     json=body) as resp:
+                if resp.status_code != 200:
+                    detail = (await resp.aread()).decode("utf-8", "replace")[:500]
+                    payload = {"error": {"message": "upstream error: " + detail}}
+                    yield "data: {}\n\n".format(json.dumps(payload)).encode()
+                    yield b"data: [DONE]\n\n"
+                    return
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except ValueError:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    finish = choice.get("finish_reason")
+                    if not choice and chunk.get("usage"):
+                        yield "data: {}\n\n".format(payload).encode()
+                        continue
+                    if finish == "tool_calls" and delta.get("tool_calls"):
+                        tool_calls = delta["tool_calls"]
+                        continue  # swallow: the client never sees tool plumbing
+                    piece = ""
+                    content = delta.get("content")
+                    if content:
+                        buf += content
+                        if not capturing:
+                            cut, found = _safe_cut(buf)
+                            capturing = capturing or found
+                            if cut > sent:
+                                piece = buf[sent:cut]
+                                sent = cut
+                    out_delta = {k: v for k, v in delta.items()
+                                 if k != "content" and v is not None}
                     if piece:
-                        relayed_any = True
-                        last_was_status = False
-                    skeleton = {k: v for k, v in chunk.items() if k != "choices"}
-                    yield _chunk(out_delta, out_finish, skeleton)
+                        out_delta["content"] = piece
+                    out_finish = None if capturing else finish
+                    if out_delta or out_finish:
+                        skeleton = {k: v for k, v in chunk.items() if k != "choices"}
+                        yield _chunk(out_delta, out_finish, skeleton)
+        except httpx.HTTPError as e:
+            payload = {"error": {"message": "upstream unreachable: {}".format(e)}}
+            yield "data: {}\n\n".format(json.dumps(payload)).encode()
+            yield b"data: [DONE]\n\n"
+            return
         if tool_calls is None and capturing:
             tool_calls = _extract_xml_tool_calls(buf) or None
         if tool_calls is None:
@@ -338,14 +358,14 @@ async def _stream_loop(body):
             return
         if final:
             break  # out of rounds: drop the unusable tool call
-        for query in filter(None, _queries(tool_calls)):
-            status = "🔎 *Searching the web for “{}”*\n\n".format(query)
-            if relayed_any and not last_was_status:
-                status = "\n\n" + status
-            relayed_any = True
-            last_was_status = True
-            yield _chunk({"content": status})
-        body["messages"] = body["messages"] + await _run_tool_calls(tool_calls, cache)
+        appended = [{"role": "assistant", "content": "", "tool_calls": tool_calls}]
+        for call, query in zip(tool_calls, _queries(tool_calls)):
+            if query:
+                yield _chunk({"quickbot_status":
+                              "Searching the web for “{}”…".format(query)})
+            appended.append(await _run_one(call, query, cache))
+        yield _chunk({"quickbot_status": "Reading the search results…"})
+        body["messages"] = body["messages"] + appended
     yield b"data: [DONE]\n\n"
 
 

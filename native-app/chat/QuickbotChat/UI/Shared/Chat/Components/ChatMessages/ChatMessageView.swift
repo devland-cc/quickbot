@@ -103,7 +103,11 @@ struct ChatMessageView: View {
                             .scaledToFit()
                             .frame(width: 100)
                             .clipShape(RoundedRectangle(cornerRadius: 5))
-                        
+
+                    }
+
+                    if showLoader {
+                        GenerationStatusView(message: message)
                     }
                 }
                 .if(message.role == "user", transform: { v in
@@ -117,6 +121,14 @@ struct ChatMessageView: View {
             }
 #if os(macOS)
             HStack(spacing: 0) {
+                /// Generation stats
+                if message.role != "user", message.done, let stats = message.statsLine {
+                    Text(stats)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 8)
+                }
+
                 /// Copy button
                 Button(action: {Clipboard.shared.setString(message.content)}) {
                     Image(systemName: "doc.on.doc")

@@ -29,6 +29,14 @@ final class ConversationStore: Sendable {
     @MainActor var conversations: [ConversationSD] = []
     @MainActor var selectedConversation: ConversationSD?
     @MainActor var messages: [MessageSD] = []
+
+    /// Live generation feedback for the in-flight response.
+    @MainActor var liveStatus: String?          // proxy stage ("Searching the web …")
+    @MainActor var generationStartedAt: Date?
+    @MainActor var liveTokensPerSecond: Double? // rough estimate while streaming
+    @MainActor private var firstDeltaAt: Date?
+    @MainActor private var streamedChars: Int = 0
+    @MainActor private var roundMetrics: [QuickbotService.ChatMetrics] = []
     
     init(swiftDataService: SwiftDataService) {
         self.swiftDataService = swiftDataService
@@ -147,9 +155,16 @@ final class ConversationStore: Sendable {
         
         let assistantMessage = MessageSD(content: "", role: "assistant")
         assistantMessage.conversation = conversation
-        
+
         conversationState = .loading
-        
+        liveStatus = nil
+        generationStartedAt = .now
+        liveTokensPerSecond = nil
+        firstDeltaAt = nil
+        streamedChars = 0
+        roundMetrics = []
+        let thinking = UserDefaults.standard.bool(forKey: "modelThinking")
+
         Task {
             try await swiftDataService.updateConversation(conversation)
             try await swiftDataService.createMessage(userMessage)
@@ -159,7 +174,7 @@ final class ConversationStore: Sendable {
             
             if await QuickbotService.shared.reachable() {
                 DispatchQueue.global(qos: .background).async {
-                    self.generation = QuickbotService.shared.chat(model: model.name, messages: messageHistory, temperature: 0)
+                    self.generation = QuickbotService.shared.chat(model: model.name, messages: messageHistory, temperature: 0, thinking: thinking)
                         .sink(receiveCompletion: { [weak self] completion in
                             switch completion {
                             case .finished:
@@ -167,9 +182,9 @@ final class ConversationStore: Sendable {
                             case .failure(let error):
                                 self?.handleError(error.localizedDescription)
                             }
-                        }, receiveValue: { [weak self] delta in
+                        }, receiveValue: { [weak self] event in
                             Task { @MainActor in
-                                self?.handleReceive(delta)
+                                self?.handleReceive(event)
                             }
                         })
 
@@ -181,44 +196,80 @@ final class ConversationStore: Sendable {
     }
     
     @MainActor
-    private func handleReceive(_ delta: String)  {
+    private func handleReceive(_ event: QuickbotService.ChatEvent)  {
         if messages.isEmpty { return }
 
-        currentMessageBuffer = currentMessageBuffer + delta
+        switch event {
+        case .delta(let delta):
+            liveStatus = nil
+            if firstDeltaAt == nil { firstDeltaAt = .now }
+            streamedChars += delta.count
+            if let firstDeltaAt, -firstDeltaAt.timeIntervalSinceNow > 2 {
+                // ~4 chars per token: rough, corrected by real usage numbers
+                // in the completed message's stats line.
+                liveTokensPerSecond = Double(streamedChars) / 4 / -firstDeltaAt.timeIntervalSinceNow
+            }
+            currentMessageBuffer = currentMessageBuffer + delta
 
-        throttler.throttle { [weak self] in
-            guard let self = self else { return }
-            let lastIndex = self.messages.count - 1
-            self.messages[lastIndex].content.append(currentMessageBuffer)
-            currentMessageBuffer = ""
+            throttler.throttle { [weak self] in
+                guard let self = self else { return }
+                let lastIndex = self.messages.count - 1
+                self.messages[lastIndex].content.append(currentMessageBuffer)
+                currentMessageBuffer = ""
+            }
+        case .status(let status):
+            liveStatus = status
+        case .metrics(let metrics):
+            roundMetrics.append(metrics)
         }
     }
     
+    @MainActor
+    private func clearLiveFeedback() {
+        liveStatus = nil
+        generationStartedAt = nil
+        liveTokensPerSecond = nil
+        firstDeltaAt = nil
+    }
+
     @MainActor
     private func handleError(_ errorMessage: String) {
         guard let lastMesasge = messages.last else { return }
         lastMesasge.error = true
         lastMesasge.done = false
-        
+        clearLiveFeedback()
+
         Task(priority: .background) {
             try? await swiftDataService.updateMessage(lastMesasge)
         }
-        
+
         withAnimation {
             conversationState = .error(message: errorMessage)
         }
     }
-    
+
     @MainActor
     private func handleComplete() {
         guard let lastMesasge = messages.last else { return }
         lastMesasge.error = false
         lastMesasge.done = true
-        
+
+        if let startedAt = generationStartedAt {
+            lastMesasge.generationDuration = -startedAt.timeIntervalSinceNow
+        }
+        if !roundMetrics.isEmpty {
+            // One usage entry per inference round: prompt/cache sizes grow
+            // each round (take the last), generated tokens add up.
+            lastMesasge.promptTokens = roundMetrics.last?.promptTokens
+            lastMesasge.completionTokens = roundMetrics.map(\.completionTokens).reduce(0, +)
+            lastMesasge.tokensPerSecond = roundMetrics.compactMap(\.tokensPerSecond).last
+        }
+        clearLiveFeedback()
+
         Task(priority: .background) {
             try await self.swiftDataService.updateMessage(lastMesasge)
         }
-        
+
         withAnimation {
             conversationState = .completed
         }

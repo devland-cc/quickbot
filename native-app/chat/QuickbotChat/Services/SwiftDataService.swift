@@ -38,6 +38,10 @@ final actor SwiftDataService {
         var error: Bool
         var createdAt: Date
         var image: Data?
+        var generationDuration: Double?
+        var promptTokens: Int?
+        var completionTokens: Int?
+        var tokensPerSecond: Double?
     }
 
     private struct ConversationDTO: Codable {
@@ -99,6 +103,10 @@ final actor SwiftDataService {
                 )
                 message.id = messageDTO.id
                 message.createdAt = messageDTO.createdAt
+                message.generationDuration = messageDTO.generationDuration
+                message.promptTokens = messageDTO.promptTokens
+                message.completionTokens = messageDTO.completionTokens
+                message.tokensPerSecond = messageDTO.tokensPerSecond
                 message.conversation = conversation
             }
             return conversation
@@ -137,7 +145,11 @@ final actor SwiftDataService {
                             done: $0.done,
                             error: $0.error,
                             createdAt: $0.createdAt,
-                            image: $0.image
+                            image: $0.image,
+                            generationDuration: $0.generationDuration,
+                            promptTokens: $0.promptTokens,
+                            completionTokens: $0.completionTokens,
+                            tokensPerSecond: $0.tokensPerSecond
                         )
                     }
                 )

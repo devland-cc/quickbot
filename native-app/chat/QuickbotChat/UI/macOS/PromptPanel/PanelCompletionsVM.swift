@@ -57,9 +57,13 @@ final class CompletionsPanelVM {
                         case .failure(let error):
                             self?.handleError(error.localizedDescription)
                         }
-                    }, receiveValue: { [weak self] delta in
+                    }, receiveValue: { [weak self] event in
                         Task { @MainActor in
-                            self?.handleReceive(delta)
+                            // The panel shows only the text; proxy statuses
+                            // and token metrics are chat-window concerns.
+                            if case .delta(let delta) = event {
+                                self?.handleReceive(delta)
+                            }
                         }
                     })
             } else {

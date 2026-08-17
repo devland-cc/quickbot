@@ -15,6 +15,7 @@ struct Settings: View {
     
     @AppStorage("serverEndpoint") private var serverEndpoint: String = ""
     @AppStorage("webSearch") private var webSearch: Bool = true
+    @AppStorage("modelThinking") private var modelThinking: Bool = false
     @AppStorage("systemPrompt") private var systemPrompt: String = ""
     @AppStorage("vibrations") private var vibrations: Bool = true
     @AppStorage("colorScheme") private var colorScheme = AppColorScheme.system
@@ -66,6 +67,7 @@ struct Settings: View {
         SettingsView(
             serverEndpoint: $serverEndpoint,
             webSearch: $webSearch,
+            modelThinking: $modelThinking,
             systemPrompt: $systemPrompt,
             vibrations: $vibrations,
             colorScheme: $colorScheme,

@@ -189,9 +189,31 @@ final class QuickbotService: @unchecked Sendable {
         }
     }
 
-    /// Streams a chat completion, emitting content deltas as they arrive.
-    func chat(model: String, messages: [ChatMessage], temperature: Double) -> AnyPublisher<String, Error> {
-        let subject = PassthroughSubject<String, Error>()
+    /// Token accounting for one inference round, from the server's usage
+    /// chunk (`stream_options.include_usage`). The tool proxy relays one
+    /// per round; consumers accumulate them.
+    struct ChatMetrics {
+        var promptTokens: Int
+        var completionTokens: Int
+        var cachedTokens: Int
+        var tokensPerSecond: Double?
+    }
+
+    /// What a chat stream can emit besides completion: ephemeral progress
+    /// from the tool proxy and token metrics.
+    enum ChatEvent {
+        /// Visible message text. Model reasoning is delivered inline,
+        /// wrapped in <think></think> tags (the format MessageSD renders).
+        case delta(String)
+        /// Ephemeral stage description ("Searching the web for …").
+        case status(String)
+        case metrics(ChatMetrics)
+    }
+
+    /// Streams a chat completion, emitting content deltas, proxy status
+    /// updates and token metrics as they arrive.
+    func chat(model: String, messages: [ChatMessage], temperature: Double, thinking: Bool = false) -> AnyPublisher<ChatEvent, Error> {
+        let subject = PassthroughSubject<ChatEvent, Error>()
         let modelId = modelIdsByName[model] ?? model
         let url = baseURL.appendingPathComponent("chat/completions")
 
@@ -209,6 +231,8 @@ final class QuickbotService: @unchecked Sendable {
                             "messages": messages.map(Self.encodeMessage),
                             "temperature": temperature,
                             "stream": true,
+                            "stream_options": ["include_usage": true],
+                            "enable_thinking": thinking,
                             // Honored by the Quickbot tool proxy; unknown to
                             // (and ignored by) a bare inference server.
                             "web_search": UserDefaults.standard.object(forKey: "webSearch") as? Bool ?? true,
@@ -224,13 +248,38 @@ final class QuickbotService: @unchecked Sendable {
                             throw ChatError.httpError(http.statusCode, body)
                         }
 
+                        // Reasoning arrives on a separate delta channel
+                        // (reasoning_content); re-wrap it in <think> tags so
+                        // the existing message UI renders it.
+                        var inThink = false
                         for try await line in bytes.lines {
                             guard line.hasPrefix("data: ") else { continue }
                             let payload = String(line.dropFirst(6))
                             if payload == "[DONE]" { break }
-                            if let delta = Self.contentDelta(fromChunk: payload), !delta.isEmpty {
-                                subject.send(delta)
+                            guard let chunk = Self.parse(chunk: payload) else { continue }
+                            if let status = chunk.status {
+                                subject.send(.status(status))
                             }
+                            if let reasoning = chunk.reasoning, !reasoning.isEmpty {
+                                if !inThink {
+                                    inThink = true
+                                    subject.send(.delta("<think>"))
+                                }
+                                subject.send(.delta(reasoning))
+                            }
+                            if let content = chunk.content, !content.isEmpty {
+                                if inThink {
+                                    inThink = false
+                                    subject.send(.delta("</think>\n"))
+                                }
+                                subject.send(.delta(content))
+                            }
+                            if let metrics = chunk.metrics {
+                                subject.send(.metrics(metrics))
+                            }
+                        }
+                        if inThink {
+                            subject.send(.delta("</think>\n"))
                         }
                         subject.send(completion: .finished)
                     } catch {
@@ -259,13 +308,35 @@ final class QuickbotService: @unchecked Sendable {
         return ["role": message.role.rawValue, "content": parts]
     }
 
-    private static func contentDelta(fromChunk payload: String) -> String? {
+    private struct ParsedChunk {
+        var content: String?
+        var reasoning: String?
+        var status: String?
+        var metrics: ChatMetrics?
+    }
+
+    private static func parse(chunk payload: String) -> ParsedChunk? {
         guard let data = payload.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let delta = choices.first?["delta"] as? [String: Any] else {
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return delta["content"] as? String
+        var parsed = ParsedChunk()
+        if let delta = (json["choices"] as? [[String: Any]])?.first?["delta"] as? [String: Any] {
+            parsed.content = delta["content"] as? String
+            parsed.reasoning = delta["reasoning_content"] as? String
+            parsed.status = delta["quickbot_status"] as? String
+        }
+        if let usage = json["usage"] as? [String: Any],
+           let promptTokens = usage["prompt_tokens"] as? Int {
+            let details = usage["prompt_tokens_details"] as? [String: Any]
+            let timings = json["timings"] as? [String: Any]
+            parsed.metrics = ChatMetrics(
+                promptTokens: promptTokens,
+                completionTokens: usage["completion_tokens"] as? Int ?? 0,
+                cachedTokens: details?["cached_tokens"] as? Int ?? 0,
+                tokensPerSecond: timings?["predicted_per_second"] as? Double
+            )
+        }
+        return parsed
     }
 }

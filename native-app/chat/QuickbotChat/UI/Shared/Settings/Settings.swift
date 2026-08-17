@@ -14,6 +14,7 @@ struct Settings: View {
     var swiftDataService = SwiftDataService.shared
     
     @AppStorage("serverEndpoint") private var serverEndpoint: String = ""
+    @AppStorage("webSearch") private var webSearch: Bool = true
     @AppStorage("systemPrompt") private var systemPrompt: String = ""
     @AppStorage("vibrations") private var vibrations: Bool = true
     @AppStorage("colorScheme") private var colorScheme = AppColorScheme.system
@@ -64,6 +65,7 @@ struct Settings: View {
     var body: some View {
         SettingsView(
             serverEndpoint: $serverEndpoint,
+            webSearch: $webSearch,
             systemPrompt: $systemPrompt,
             vibrations: $vibrations,
             colorScheme: $colorScheme,

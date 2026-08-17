@@ -11,6 +11,7 @@ import AVFoundation
 struct SettingsView: View {
     @Environment(\.presentationMode) var presentationMode
     @Binding var serverEndpoint: String
+    @Binding var webSearch: Bool
     @Binding var systemPrompt: String
     @Binding var vibrations: Bool
     @Binding var colorScheme: AppColorScheme
@@ -74,6 +75,16 @@ struct SettingsView: View {
                             .autocapitalization(.none)
 #endif
                         Text("Auto-configured from the Quickbot server when it is available.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    VStack(alignment: .leading) {
+                        Toggle(isOn: $webSearch) {
+                            Label("Web search", systemImage: "globe")
+                                .foregroundStyle(Color.label)
+                        }
+                        Text("Lets the model search the web when it needs current information. Searches leave this machine.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }

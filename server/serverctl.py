@@ -34,6 +34,7 @@ RELOCATED = INSTALLED or bool(os.environ.get("QUICKBOT_DATA_DIR"))
 
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 PID_FILE = os.path.join(DATA_DIR, ".server.pid")
+PROXY_PID_FILE = os.path.join(DATA_DIR, ".proxy.pid")
 VENV_DIR = (os.path.join(DATA_DIR, "venv") if RELOCATED
             else os.path.join(SERVER_DIR, ".venv"))
 MODELS_DIR = (os.path.join(DATA_DIR, "models") if RELOCATED
@@ -55,6 +56,9 @@ DEFAULT_CONFIG = {
     "model": os.path.join(MODELS_DIR, MODELS[0]["dir"]),
     "draftModel": os.path.join(MODELS_DIR, MODELS[1]["dir"]),
     "port": 8080,
+    # Tool proxy: OpenAI-compatible front that gives the model web search.
+    "proxyPort": 8081,
+    "webSearch": True,
     "host": "127.0.0.1",
     "extraArgs": [],
     # Prompt caching: without APC the server redoes the full system prompt
@@ -91,7 +95,19 @@ def log_file(cfg):
 
 
 def endpoint(cfg):
+    """Endpoint clients should use: the tool proxy when it is up,
+    the inference server directly otherwise."""
+    if proxy_alive(cfg):
+        return proxy_endpoint(cfg)
+    return upstream_endpoint(cfg)
+
+
+def upstream_endpoint(cfg):
     return "http://{}:{}/v1".format(cfg["host"], cfg["port"])
+
+
+def proxy_endpoint(cfg):
+    return "http://{}:{}/v1".format(cfg["host"], cfg.get("proxyPort", 8081))
 
 
 def server_command(cfg):
@@ -117,11 +133,11 @@ def is_alive(pid):
         return True
 
 
-def listening_pid(cfg):
-    """PID of the process listening on the configured port (via lsof)."""
+def listening_pid(port):
+    """PID of the process listening on a TCP port (via lsof)."""
     try:
         out = subprocess.run(
-            ["/usr/sbin/lsof", "-nP", "-iTCP:{}".format(cfg["port"]), "-sTCP:LISTEN", "-t"],
+            ["/usr/sbin/lsof", "-nP", "-iTCP:{}".format(port), "-sTCP:LISTEN", "-t"],
             capture_output=True, text=True, timeout=10,
         ).stdout
     except Exception:
@@ -176,7 +192,7 @@ def current_state(cfg):
                not even be bound yet)
     stopped  = nothing alive
     """
-    lpid = listening_pid(cfg)
+    lpid = listening_pid(cfg["port"])
     own = pidfile_pid()
     if lpid is not None:
         adopted = own is None or own != lpid
@@ -186,12 +202,65 @@ def current_state(cfg):
     return ("stopped", None, False)
 
 
+# --- Tool proxy lifecycle -------------------------------------------------
+
+
+def proxy_alive(cfg):
+    return listening_pid(cfg.get("proxyPort", 8081)) is not None
+
+
+def start_proxy(cfg):
+    if proxy_alive(cfg):
+        return
+    python = os.path.join(os.path.dirname(expand(cfg["executable"])), "python")
+    script = os.path.join(SERVER_DIR, "toolproxy.py")
+    if not (os.access(python, os.X_OK) and os.path.exists(script)):
+        return
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["QUICKBOT_UPSTREAM"] = "http://{}:{}".format(cfg["host"], cfg["port"])
+    env["QUICKBOT_PROXY_PORT"] = str(cfg.get("proxyPort", 8081))
+    env["QUICKBOT_WEB_SEARCH"] = "1" if cfg.get("webSearch", True) else "0"
+    with open(log_file(cfg), "ab") as lf:
+        proc = subprocess.Popen(
+            [python, script], stdout=lf, stderr=subprocess.STDOUT, env=env,
+            start_new_session=True,
+        )
+    with open(PROXY_PID_FILE, "w") as f:
+        f.write(str(proc.pid))
+
+
+def stop_proxy(cfg):
+    targets = set()
+    try:
+        with open(PROXY_PID_FILE) as f:
+            targets.add(int(f.read().strip()))
+    except (OSError, ValueError):
+        pass
+    lpid = listening_pid(cfg.get("proxyPort", 8081))
+    if lpid is not None:
+        targets.add(lpid)
+    for pid in targets:
+        _kill(pid, signal.SIGTERM)
+    deadline = time.time() + 5
+    while time.time() < deadline and any(is_alive(p) for p in targets):
+        time.sleep(0.1)
+    for pid in targets:
+        if is_alive(pid):
+            _kill(pid, signal.SIGKILL)
+    try:
+        os.remove(PROXY_PID_FILE)
+    except OSError:
+        pass
+
+
 # --- Commands -------------------------------------------------------------
 
 
 def cmd_start(cfg):
     state, pid, _ = current_state(cfg)
     if state != "stopped":
+        start_proxy(cfg)  # heal a missing proxy next to a live server
         print("Server already {} (PID {}).".format(state, pid))
         return 0
 
@@ -227,11 +296,13 @@ def cmd_start(cfg):
         )
     with open(PID_FILE, "w") as f:
         f.write(str(proc.pid))
+    start_proxy(cfg)
     print("Starting server (PID {}). Loading the model takes ~40s.".format(proc.pid))
     return 0
 
 
 def cmd_stop(cfg):
+    stop_proxy(cfg)
     state, target, _ = current_state(cfg)
     if target is None:
         print("Server already stopped.")
@@ -251,7 +322,7 @@ def cmd_stop(cfg):
             time.sleep(0.1)
 
     # Make sure the port is actually free (orphaned uvicorn processes).
-    leftover = listening_pid(cfg)
+    leftover = listening_pid(cfg["port"])
     if leftover is not None and leftover != target:
         _kill(leftover, signal.SIGTERM)
         time.sleep(1.0)
@@ -296,6 +367,7 @@ def cmd_status(cfg, as_json):
         "modelPath": model_path,
         "draftModelPath": expand(draft) if draft else None,
         "endpoint": endpoint(cfg),
+        "webSearch": bool(cfg.get("webSearch", True)) and proxy_alive(cfg),
         "configFile": CONFIG_FILE,
         "logFile": log_file(cfg),
         "stopServerOnQuit": bool(cfg.get("stopServerOnQuit", False)),

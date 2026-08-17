@@ -14,9 +14,13 @@ away.
   your whole RAM back.
 - **Quickbot Chat** — chat UI that runs silently in the background: no Dock icon,
 no windows until you ask.
+- **Web search** — the model searches the web when a question needs current
+  information (Google rendered by the system WebKit, DuckDuckGo as fallback —
+  no API keys, no accounts).
 
 Everything runs offline. Perfect for working during a flight or after a doomsday
-event.
+event. The one exception is the web search tool above — turn it off in
+Quickbot Chat's settings if even your searches should stay home.
 
 ## Shortcuts
 

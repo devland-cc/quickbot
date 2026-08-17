@@ -209,6 +209,9 @@ final class QuickbotService: @unchecked Sendable {
                             "messages": messages.map(Self.encodeMessage),
                             "temperature": temperature,
                             "stream": true,
+                            // Honored by the Quickbot tool proxy; unknown to
+                            // (and ignored by) a bare inference server.
+                            "web_search": UserDefaults.standard.object(forKey: "webSearch") as? Bool ?? true,
                         ])
 
                         let (bytes, response) = try await URLSession.shared.bytes(for: request)

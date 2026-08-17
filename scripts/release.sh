@@ -27,7 +27,12 @@ echo "==> Bundling the server component into Quickbot.app"
 SERVER_DEST="$STAGING/Quickbot.app/Contents/Resources/server"
 mkdir -p "$SERVER_DEST"
 cp "$ROOT/server/serverctl" "$ROOT/server/serverctl.py" \
+   "$ROOT/server/toolproxy.py" "$ROOT/server/websearch.py" \
    "$ROOT/server/requirements.lock" "$ROOT/server/README.md" "$SERVER_DEST/"
+
+echo "==> Compiling webkit-fetch (web search helper)"
+swiftc -O -framework WebKit \
+  -o "$SERVER_DEST/webkit-fetch" "$ROOT/server/webkit-fetch.swift"
 
 echo "==> Stamping version $VERSION"
 for app in "Quickbot.app" "Quickbot Chat.app"; do

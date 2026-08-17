@@ -10,3 +10,4 @@ server/config.json
 build/
 to-dos/
 server/webkit-fetch
+server/.proxy.pid

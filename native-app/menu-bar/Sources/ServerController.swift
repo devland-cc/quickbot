@@ -36,6 +36,7 @@ struct ServerStatus: Decodable {
     var startedAtEpoch: Double?
     var modelName: String
     var modelPath: String
+    var draftModelPath: String?
     var endpoint: String
     var configFile: String
     var logFile: String

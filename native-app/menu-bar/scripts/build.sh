@@ -28,6 +28,8 @@ swiftc -O \
   -o "$APP/Contents/MacOS/Quickbot" \
   "$ROOT/Sources/Icons.swift" \
   "$ROOT/Sources/SwitchControl.swift" \
+  "$ROOT/Sources/GlobalHotkeys.swift" \
+  "$ROOT/Sources/LoadingProgress.swift" \
   "$ROOT/Sources/ServerController.swift" \
   "$ROOT/Sources/main.swift"
 

@@ -254,6 +254,7 @@ def cmd_status(cfg, as_json):
     state, pid, adopted = current_state(cfg)
     started = process_start_epoch(pid) if pid is not None else None
     model_path = expand(cfg["model"])
+    draft = cfg.get("draftModel")
     info = {
         "state": state,
         "pid": pid,
@@ -261,6 +262,7 @@ def cmd_status(cfg, as_json):
         "startedAtEpoch": started,
         "modelName": os.path.basename(model_path.rstrip("/")),
         "modelPath": model_path,
+        "draftModelPath": expand(draft) if draft else None,
         "endpoint": endpoint(cfg),
         "configFile": CONFIG_FILE,
         "logFile": log_file(cfg),

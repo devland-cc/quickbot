@@ -10,8 +10,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let toggleItem = NSMenuItem()
     private let toggleSwitch = SwitchControl()
     private let loginItem = NSMenuItem()
+    private let chatItem = NSMenuItem()
+    private let endpointItem = NSMenuItem()
+    /// Startup progress ("Loading model (42%)", "Loading chat interface").
+    private let statusLine = NSMenuItem()
 
     private var menuRefreshTimer: Timer?
+
+    private let spinner = SpinnerIcon()
+    /// Total bytes of model + draft weights, the denominator of the
+    /// load-progress estimate. Reset when the server goes down.
+    private var expectedModelBytes: UInt64?
+    private var chatLaunchStarted: Date?
+
+    private static let chatBundleId = "com.quickbot.chat"
+    /// ⌘; and ⌘⇧; while Quickbot is off (Quickbot Chat owns them while on).
+    private let hotkeys = GlobalHotkeys()
 
     /// Name of the lucide icon currently shown ("bot" or "bot-off").
     /// Published to NSUserDefaults for external inspection/diagnostics.
@@ -42,6 +56,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         buildStatusItem()
         buildMenu()
+
+        // While Quickbot is off, ⌘; and ⌘⇧; open this menu instead of the
+        // (terminated) chat app, revealing the off state.
+        hotkeys.onPress = { [weak self] in
+            self?.statusItem?.button?.performClick(nil)
+        }
+
         render(.stopped)
 
         server.bootstrap()
@@ -107,18 +128,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggleItem.view = row
         menu.addItem(toggleItem)
 
+        statusLine.isEnabled = false
+        statusLine.isHidden = true
+        menu.addItem(statusLine)
+
         menu.addItem(.separator())
 
         // The ⌘⇧; equivalent is owned by Quickbot Chat (global hotkey); here
         // it is mainly advertisement, though it also fires while this menu
         // is open, doing the same thing.
-        let chatItem = NSMenuItem(title: "Show chat", action: #selector(showChatWindow), keyEquivalent: ";")
+        chatItem.title = "Show chat"
+        chatItem.action = #selector(showChatWindow)
+        chatItem.keyEquivalent = ";"
         chatItem.keyEquivalentModifierMask = [.command, .shift]
         chatItem.target = self
         chatItem.isEnabled = true
         menu.addItem(chatItem)
 
-        let endpointItem = NSMenuItem(title: "Copy API endpoint", action: #selector(copyEndpoint), keyEquivalent: "")
+        endpointItem.title = "Copy API endpoint"
+        endpointItem.action = #selector(copyEndpoint)
         endpointItem.target = self
         endpointItem.isEnabled = true
         menu.addItem(endpointItem)
@@ -227,16 +255,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func render(_ state: ServerState) {
-        // The icon is the central requirement: bot = on, bot-off = off.
-        applyIcon(running: state == .running)
-        statusItem.button?.appearsDisabled = state.isBusy
+        // The icon is the central requirement: bot = on, bot-off = off —
+        // except while starting, when a spinner takes its place.
+        if state == .starting {
+            spinner.start(on: statusItem.button)
+            currentIconName = "loading"
+            UserDefaults.standard.set("loading", forKey: "currentIcon")
+            statusItem.button?.appearsDisabled = false
+        } else {
+            spinner.stop()
+            applyIcon(running: state == .running)
+            statusItem.button?.appearsDisabled = state == .stopping
+        }
+        if state == .stopped { expectedModelBytes = nil }
         UserDefaults.standard.set(state.label, forKey: "currentState")
 
         var tooltip = "Quickbot: \(state.label)"
         if case .failed(let msg) = state { tooltip += "\n\(msg)" }
         statusItem.button?.toolTip = tooltip
 
+        updateChatIntegration(state)
         refreshMenuTexts()
+    }
+
+    /// The toggle governs the whole stack: with the server up, Quickbot Chat
+    /// runs (silently) and owns ⌘;/⌘⇧;; with it down, the chat app is
+    /// unloaded from memory, its menu entries disappear, and the shortcuts
+    /// fall back to opening this menu.
+    private var chatIntegrationServerUp: Bool?
+
+    private func updateChatIntegration(_ state: ServerState) {
+        let serverUp = (state == .running || state == .starting)
+        chatItem.isHidden = !serverUp
+        endpointItem.isHidden = !serverUp
+
+        guard serverUp != chatIntegrationServerUp else { return }
+        let previous = chatIntegrationServerUp
+        chatIntegrationServerUp = serverUp
+
+        if serverUp {
+            hotkeys.unregister()
+            launchChatAppIfNeeded()
+        } else {
+            // Only kill the chat app on an actual on→off transition; the
+            // initial render(.stopped) before bootstrap adopts a running
+            // server must not take a healthy chat down.
+            if previous == true { quitChatApp() }
+            hotkeys.register()
+        }
+    }
+
+    private func launchChatAppIfNeeded() {
+        guard NSRunningApplication.runningApplications(withBundleIdentifier: Self.chatBundleId).isEmpty,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.chatBundleId)
+        else { return }
+        chatLaunchStarted = Date()
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+    }
+
+    private func quitChatApp() {
+        NSRunningApplication.runningApplications(withBundleIdentifier: Self.chatBundleId)
+            .forEach { $0.terminate() }
+    }
+
+    /// Text for the startup status line, or nil when there is nothing to report.
+    private func startupStatusText(_ state: ServerState) -> String? {
+        switch state {
+        case .starting:
+            if expectedModelBytes == nil, let status = controller?.status {
+                let paths = [status.modelPath] + [status.draftModelPath].compactMap { $0 }
+                expectedModelBytes = paths.reduce(0) { $0 + LoadingProgress.directoryBytes($1) }
+            }
+            if let pid = controller?.status?.pid,
+               let expected = expectedModelBytes, expected > 0,
+               let footprint = LoadingProgress.processFootprint(pid: pid) {
+                let percent = min(99, Int(footprint &* 100 / expected))
+                return "Loading model (\(percent)%)"
+            }
+            return "Loading model…"
+        case .running:
+            let chatApp = NSRunningApplication.runningApplications(withBundleIdentifier: Self.chatBundleId).first
+            if let chatApp {
+                if !chatApp.isFinishedLaunching { return "Loading chat interface" }
+            } else if let started = chatLaunchStarted, Date().timeIntervalSince(started) < 10 {
+                return "Loading chat interface"
+            }
+            return nil
+        default:
+            return nil
+        }
     }
 
     private func refreshMenuTexts() {
@@ -244,9 +353,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Switch: position mirrors the target state (on while starting, so
         // flipping it off cancels the startup). Setting isOn in code does
-        // not fire the action.
+        // not fire the action. The green accent waits for everything to be
+        // actually loaded.
         toggleSwitch.isOn = (state == .running || state == .starting)
         toggleSwitch.isEnabled = state != .stopping
+        toggleSwitch.showsAccent = (state == .running)
+
+        if let text = startupStatusText(state) {
+            statusLine.attributedTitle = NSAttributedString(string: text, attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+            statusLine.isHidden = false
+        } else {
+            statusLine.isHidden = true
+        }
 
         loginItem.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
 
@@ -255,6 +376,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.set(toggleSwitch.isOn ? "On" : "Off", forKey: "toggleTitle")
         defaults.set(toggleSwitch.isEnabled, forKey: "toggleEnabled")
         defaults.set(statusItem.menu?.autoenablesItems ?? true, forKey: "menuAutoenables")
+        defaults.set(statusItem.menu?.items.map { item in
+            let title = item.title.isEmpty ? "—" : item.title
+            return item.isHidden ? "\(title) (hidden)" : title
+        } ?? [], forKey: "menuItems")
+        defaults.set(statusLine.isHidden ? "" : (statusLine.attributedTitle?.string ?? ""),
+                     forKey: "statusLine")
     }
 }
 

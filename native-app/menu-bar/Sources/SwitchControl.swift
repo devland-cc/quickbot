@@ -18,6 +18,12 @@ final class SwitchControl: NSControl {
         didSet { updateAppearance(animated: true) }
     }
 
+    /// While Quickbot is still loading (model, chat interface) the switch
+    /// sits in the "on" position but without the green accent.
+    var showsAccent = true {
+        didSet { updateAppearance(animated: true) }
+    }
+
     override var isEnabled: Bool {
         didSet { alphaValue = isEnabled ? 1 : 0.45 }
     }
@@ -61,7 +67,7 @@ final class SwitchControl: NSControl {
         // Resolve dynamic colors against the current light/dark appearance.
         var trackColor = NSColor.systemGray.withAlphaComponent(0.4).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            trackColor = (isOn ? NSColor.systemGreen
+            trackColor = ((isOn && showsAccent) ? NSColor.systemGreen
                                : NSColor.systemGray.withAlphaComponent(0.4)).cgColor
         }
         let diameter = bounds.height - Self.knobInset * 2

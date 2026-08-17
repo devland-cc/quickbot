@@ -1,13 +1,13 @@
 .DS_Store
 __pycache__/
-models/
+/models/
 server/.venv/
 server/.server.pid
 native-app/menu-bar/build/
 native-app/chat/.build/
 native-app/chat/build/
 server/config.json
-build/
+/build/
 to-dos/
 server/webkit-fetch
 server/.proxy.pid

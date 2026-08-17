@@ -1,20 +1,22 @@
 # Quickbot
 
-A fully local LLM assistant for Apple silicon Macs. Quickbot runs
-[Qwen3.8-27B](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit) on-device
-with [MLX](https://github.com/ml-explore/mlx) and MTP speculative decoding,
+Which local LLM should I use on my Mac? Which decoder? Which model version?
+
+Stop overthinking and just use Quickbot!
+
+It is a fully local LLM assistant for Apple silicon Macs. Quickbot runs 
+on-device with all the optimizations you need for a great performance,
 wrapped in a native menu bar app and a chat interface that is one keystroke
 away.
 
 - **Menu bar app** — one switch turns the whole stack on and off (server,
-  models, chat app). Shows live startup progress while the model loads.
-- **Quickbot Chat** — native chat UI (a fork of
-  [Enchanted](https://github.com/gluonfield/enchanted)). Runs silently in the
-  background: no Dock icon, no windows until you ask.
-- **Server** — `mlx_vlm.server` behind `serverctl`, exposing an
-  OpenAI-compatible API at `http://127.0.0.1:8080/v1` for any other client.
+  models, chat app). When you turn it off, everything goes away and you have
+  your whole RAM back.
+- **Quickbot Chat** — chat UI that runs silently in the background: no Dock icon,
+no windows until you ask.
 
-Everything runs offline. Nothing leaves the machine.
+Everything runs offline. Perfect for working during a flight or after a doomsday
+event.
 
 ## Shortcuts
 

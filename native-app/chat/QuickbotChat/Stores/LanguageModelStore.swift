@@ -59,7 +59,10 @@ final class LanguageModelStore {
 
             // Select a model as soon as the list is known, so the panel
             // works even if the (hidden) chat window never drove selection.
-            if self.selectedModel == nil {
+            // Also reselect when the previous selection is gone from the
+            // list (the server backend, and with it the model name, changed).
+            let selectionGone = self.selectedModel.map { !self.models.contains($0) } ?? true
+            if selectionGone, !self.models.isEmpty {
                 let defaultModel = UserDefaults.standard.string(forKey: "defaultModel") ?? ""
                 self.setModel(modelName: defaultModel)
             }

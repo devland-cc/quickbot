@@ -46,7 +46,25 @@ final class AppStore {
             Task { [weak self] in
                 let status = await self?.reachable() ?? false
                 self?.updateReachable(status)
+                await self?.refreshModelsIfNeeded(nowReachable: status)
             }
+        }
+    }
+
+    /// The model list is fetched once at launch. If the server was still
+    /// loading its model at that moment (it takes ~40s after a toggle or
+    /// login), the fetch fails and the app is left with no models — and no
+    /// way to send anything. Reload the list whenever the server comes back
+    /// from unreachable, and whenever it is up but the list is empty.
+    private var wasReachable = true
+
+    private func refreshModelsIfNeeded(nowReachable: Bool) async {
+        let cameBack = nowReachable && !wasReachable
+        wasReachable = nowReachable
+        guard nowReachable else { return }
+        let modelsEmpty = await MainActor.run { LanguageModelStore.shared.models.isEmpty }
+        if cameBack || modelsEmpty {
+            try? await LanguageModelStore.shared.loadModels()
         }
     }
     

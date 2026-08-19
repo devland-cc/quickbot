@@ -1,7 +1,9 @@
 #!/bin/bash
 # Entry point for the Quickbot server controller.
-# Prefers a venv Python (repo .venv or the user data dir's venv); falls back
-# to system python3 (serverctl.py itself only uses the standard library).
+# Prefers a venv Python (repo .venv), then the private runtime unpacked from
+# the app bundle, then a legacy 0.1.0 venv in the data dir. Installed copies
+# bundle python-runtime.tar.gz and unpack it here on first run — bash + tar
+# only, so a Mac without any Python (or Command Line Tools) works.
 set -euo pipefail
 
 # Resolve symlinks so this works when invoked via Homebrew's bin symlink.
@@ -14,9 +16,34 @@ done
 DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 
 DATA_DIR="${QUICKBOT_DATA_DIR:-$HOME/Library/Application Support/Quickbot}"
+RUNTIME_TARBALL="$DIR/python-runtime.tar.gz"
+
 PY="$DIR/.venv/bin/python"
+[ -x "$PY" ] || PY="$DATA_DIR/runtime/bin/python3"
 [ -x "$PY" ] || PY="$DATA_DIR/venv/bin/python"
-[ -x "$PY" ] || PY="python3"
+
+if [ ! -x "$PY" ] && [ -f "$RUNTIME_TARBALL" ]; then
+  # First run of an installed copy: unpack the bundled Python runtime.
+  # Partial extractions stay in the temp dir, never at runtime/, so a
+  # killed bootstrap self-heals on the next invocation.
+  mkdir -p "$DATA_DIR"
+  TMP="$(mktemp -d "$DATA_DIR/.runtime-extract.XXXXXX")"
+  tar -xzf "$RUNTIME_TARBALL" -C "$TMP"
+  mv "$TMP/python" "$DATA_DIR/runtime" 2>/dev/null || true  # lose a race => keep the winner
+  rm -rf "$TMP"
+  PY="$DATA_DIR/runtime/bin/python3"
+fi
+
+if [ ! -x "$PY" ]; then
+  if [ -f "$RUNTIME_TARBALL" ]; then
+    # Installed layout with no usable runtime: never fall back to system
+    # python3 on an end-user machine (it triggers the CLT install prompt).
+    echo "Quickbot's bundled Python runtime is missing or failed to unpack." >&2
+    echo "Reinstall the app: brew reinstall --cask quickbot" >&2
+    exit 1
+  fi
+  PY="python3"  # repo checkout without .venv: serverctl.py is stdlib-only
+fi
 
 export QUICKBOT_CLI_NAME="${QUICKBOT_CLI_NAME:-$(basename "${BASH_SOURCE[0]}")}"
 exec "$PY" "$DIR/serverctl.py" "$@"

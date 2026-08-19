@@ -36,17 +36,20 @@ When Quickbot is off, both shortcuts open the menu bar menu instead.
 ```sh
 brew tap devland-cc/tap
 brew install --cask quickbot
-quickbot setup   # installs the Python environment and downloads the models (~16 GB)
+quickbot setup   # downloads the models (~16 GB)
 ```
 
 The apps are ad-hoc signed, not notarized; the cask removes the macOS
 quarantine flag after install so Gatekeeper lets them run.
 
-`quickbot setup` downloads the models from their original Hugging Face
-repositories ([mlx-community/Qwen3.8-27B-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit)
+Nothing is installed on your system besides the two apps and the `quickbot`
+command: the inference server runs on a private Python runtime bundled
+inside the app, unpacked into `~/Library/Application Support/Quickbot` on
+first run. `quickbot setup` downloads the models from their original Hugging
+Face repositories ([mlx-community/Qwen3.8-27B-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit)
 and [mlx-community/Qwen3.8-27B-MTP-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-4bit))
-into `~/Library/Application Support/Quickbot/models`, next to the Python
-environment and the server config. Interrupted downloads resume on re-run.
+into `~/Library/Application Support/Quickbot/models`, next to that runtime
+and the server config. Interrupted downloads resume on re-run.
 
 Then launch **Quickbot** from `/Applications` and flip the switch in the menu
 bar.
@@ -73,8 +76,11 @@ Each app builds with its own `scripts/build.sh` (SwiftPM/`swiftc` only — no
 Xcode required; see `native-app/chat/README.md` for the SDK notes). In a repo
 checkout, `serverctl` keeps its state in the repo (`server/.venv`, `models/`,
 `server/config.json`); installed builds use
-`~/Library/Application Support/Quickbot` instead. `QUICKBOT_SERVER_DIR` and
-`QUICKBOT_DATA_DIR` override the component and data locations.
+`~/Library/Application Support/Quickbot` instead, with a private Python
+runtime ([python-build-standalone](https://github.com/astral-sh/python-build-standalone))
+that `release.sh` embeds in the app bundle — end users never get Python
+installed on their system. `QUICKBOT_SERVER_DIR` and `QUICKBOT_DATA_DIR`
+override the component and data locations.
 
 Cutting a release:
 

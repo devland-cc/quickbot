@@ -36,6 +36,15 @@ requirements.lock   exact package versions (uv pip freeze)
 
 The models live next door, in `../models/`.
 
+Installed builds have no `.venv`: `release.sh` embeds a relocatable CPython
+(python-build-standalone) as `python-runtime.tar.gz` next to these files,
+the shim unpacks it into `~/Library/Application Support/Quickbot/runtime`
+on first run (bash + tar only, so a Mac without Python works), and
+`quickbot setup` pip-installs `requirements.lock` straight into that
+runtime — no venv, nothing pointing back into the app bundle, no Python on
+the user's system. A legacy 0.1.0 `venv/` in the data dir keeps working and
+takes precedence; delete it and re-run setup to switch to the runtime.
+
 ## Usage
 
 ```bash

@@ -37,8 +37,27 @@ PID_FILE = os.path.join(DATA_DIR, ".server.pid")
 PROXY_PID_FILE = os.path.join(DATA_DIR, ".proxy.pid")
 VENV_DIR = (os.path.join(DATA_DIR, "venv") if RELOCATED
             else os.path.join(SERVER_DIR, ".venv"))
+# Private Python runtime: installed copies bundle python-build-standalone as
+# server/python-runtime.tar.gz; the serverctl shim (or _extract_runtime as a
+# fallback) unpacks it into the data dir, and setup pip-installs straight
+# into it — no venv, so nothing points back into the app bundle.
+RUNTIME_DIR = os.path.join(DATA_DIR, "runtime")
+RUNTIME_TARBALL = os.path.join(SERVER_DIR, "python-runtime.tar.gz")
 MODELS_DIR = (os.path.join(DATA_DIR, "models") if RELOCATED
               else os.path.join(os.path.dirname(SERVER_DIR), "models"))
+
+
+def env_bin_dir():
+    """bin/ of the Python environment holding the server packages: the repo
+    .venv (dev), the private runtime, or a legacy 0.1.0 venv in the data
+    dir. Falls back to the path setup would create."""
+    candidates = [os.path.join(SERVER_DIR, ".venv/bin"),
+                  os.path.join(RUNTIME_DIR, "bin"),
+                  os.path.join(DATA_DIR, "venv/bin")]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[1] if RELOCATED else candidates[0]
 
 # Models served by Quickbot, downloaded by `setup` from their original
 # Hugging Face repositories.
@@ -55,7 +74,7 @@ DEFAULT_CONFIG = {
     # Inference backend: "mlx" runs mlx_vlm.server with the models below,
     # "ollama" runs `ollama serve` (Ollama's MLX runner) with ollamaModel.
     "backend": "mlx",
-    "executable": os.path.join(VENV_DIR, "bin/mlx_vlm.server"),
+    "executable": os.path.join(env_bin_dir(), "mlx_vlm.server"),
     "model": os.path.join(MODELS_DIR, MODELS[0]["dir"]),
     "draftModel": os.path.join(MODELS_DIR, MODELS[1]["dir"]),
     "port": 8080,
@@ -287,9 +306,14 @@ def proxy_alive(cfg):
 def start_proxy(cfg):
     if proxy_alive(cfg):
         return
-    python = os.path.join(os.path.dirname(expand(cfg["executable"])), "python")
+    # Run the proxy on the interpreter serverctl itself runs under (the shim
+    # already picked the right environment, whatever the backend). uvicorn
+    # next to it marks a full environment — the proxy needs fastapi/httpx/
+    # uvicorn, while serverctl runs on any Python.
+    python = sys.executable
     script = os.path.join(SERVER_DIR, "toolproxy.py")
-    if not (os.access(python, os.X_OK) and os.path.exists(script)):
+    uvicorn = os.path.join(os.path.dirname(python), "uvicorn")
+    if not (os.path.exists(uvicorn) and os.path.exists(script)):
         return
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
@@ -540,11 +564,60 @@ def _find_python():
     return None
 
 
-def _setup_python():
-    mlx_server = os.path.join(VENV_DIR, "bin/mlx_vlm.server")
-    if os.access(mlx_server, os.X_OK):
-        print("==> Python environment already present ({})".format(VENV_DIR))
+def _extract_runtime():
+    """Unpack the bundled Python runtime into RUNTIME_DIR. Normally the
+    serverctl shim already did this; here as a fallback for when
+    serverctl.py is invoked directly."""
+    if os.access(os.path.join(RUNTIME_DIR, "bin/python3"), os.X_OK):
         return 0
+    if not os.path.exists(RUNTIME_TARBALL):
+        print("Bundled Python runtime not found:\n{}\n"
+              "The app bundle is incomplete — reinstall the app "
+              "(`brew reinstall --cask quickbot`).".format(RUNTIME_TARBALL),
+              file=sys.stderr)
+        return 1
+    import tarfile
+    import tempfile
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=".runtime-extract.", dir=DATA_DIR)
+    with tarfile.open(RUNTIME_TARBALL) as tf:
+        tf.extractall(tmp)
+    try:
+        os.rename(os.path.join(tmp, "python"), RUNTIME_DIR)
+    except OSError:
+        pass  # lost a race against the shim: keep the winner
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+def _setup_python():
+    bin_dir = env_bin_dir()
+    if os.access(os.path.join(bin_dir, "mlx_vlm.server"), os.X_OK):
+        legacy = bin_dir == os.path.join(DATA_DIR, "venv/bin")
+        print("==> Python environment already present ({})"
+              .format(os.path.dirname(bin_dir)))
+        if legacy:
+            print("    (legacy venv from 0.1.0 — still fine; delete it and "
+                  "re-run `{} setup` to switch to the bundled runtime)"
+                  .format(CLI_NAME))
+        return 0
+
+    if RELOCATED:
+        code = _extract_runtime()
+        if code != 0:
+            return code
+        python = os.path.join(RUNTIME_DIR, "bin/python3")
+        lock = os.path.join(SERVER_DIR, "requirements.lock")
+        print("==> Installing the inference server (mlx-vlm and friends)")
+        print("    into {}".format(RUNTIME_DIR))
+        if subprocess.call([python, "-m", "pip", "install", "--quiet",
+                            "--upgrade", "pip"]) != 0:
+            return 1
+        if subprocess.call([python, "-m", "pip", "install", "-r", lock]) != 0:
+            return 1
+        return 0
+
+    # Repo checkout: venv from a system interpreter (developer flow).
     python = _find_python()
     if python is None:
         print("Python >= 3.10 not found. Install it (e.g. `brew install python@3.12`)\n"
@@ -566,7 +639,7 @@ def _setup_python():
 
 
 def _setup_models():
-    downloader = os.path.join(VENV_DIR, "bin/python")
+    downloader = os.path.join(env_bin_dir(), "python3")
     snippet = ("import sys\n"
                "from huggingface_hub import snapshot_download\n"
                "snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])\n")

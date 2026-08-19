@@ -5,33 +5,52 @@ Every other component (the menu bar app, the CLI) drives the server exclusively
 through `serverctl` — none of them talk to the process, the port or the PID
 directly.
 
-Two interchangeable backends serve the same model (Qwen3.8 27B, 4-bit MLX):
+Everything in Quickbot runs on MLX. The two **engines** are serving
+processes, not competing runtimes:
 
-- **`mlx`** (default): `mlx_vlm.server` with the local models in `../models/`,
-  MTP speculative decoding and APC prompt caching.
-- **`ollama`**: `ollama serve` with Ollama's MLX runner and the registry model
-  `qwen3.8:27b-mlx` (a separate ~18 GB copy under `~/.ollama`).
+- **`mlx_vlm`** (default): `mlx_vlm.server` with the local models in
+  `../models/`, MTP speculative decoding and APC prompt caching.
+- **`ollama`**: `ollama serve` **always** on Ollama's MLX runner
+  (`OLLAMA_LLM_LIBRARY=mlx`, registry tags that contain `mlx`, e.g.
+  `qwen3.8:27b-mlx`). GGUF / llama.cpp / Metal is out of scope. Seed an
+  `ollama:` address in `catalog_seed.list` (or use the leftover
+  `ollamaModel` in `config.json`).
 
-Backend differences to keep in mind:
+There is no `backend: mlx | ollama` compute split. `serverctl backend` is a
+deprecated alias of `serverctl engine`; the old spelling `mlx` still means
+`mlx_vlm`.
 
-- MTP speculative decoding and APC prompt caching are mlx-only; the ollama
-  backend pays the full prefill on later search rounds (a same-shape query
-  took ~56s on ollama vs ~34s on mlx).
+Engine differences to keep in mind:
+
+- MTP speculative decoding and APC prompt caching are mlx_vlm-only; the ollama
+  engine pays the full prefill on later search rounds (a same-shape query
+  took ~56s on ollama vs ~34s on mlx_vlm).
 - Through Ollama the model always reasons before answering — its OpenAI
   endpoint ignores `enable_thinking` (and `think`, and Qwen's `/no_think`),
-  so the app's Thinking toggle only has effect on the mlx backend. The proxy
+  so the app's Thinking toggle only has effect on the mlx_vlm engine. The proxy
   normalizes Ollama's `delta.reasoning` to `delta.reasoning_content` so
   clients see one contract.
+
+A model catalog (see below) picks which model to serve from the machine's RAM
+tier. Without the catalog files — or before `setup` installs PyYAML —
+`serverctl` falls back to `config.json` and never crashes.
 
 ## Layout
 
 ```
-serverctl           entry point (bash shim → serverctl.py)
-serverctl.py        start/stop/adopt/health/status logic (stdlib only)
-config.json         server configuration (created on first run)
-requirements.lock   exact package versions (uv pip freeze)
-.venv/              Python 3.12 venv with mlx-vlm (not versioned)
-.server.pid         PID of a server started by serverctl (not versioned)
+serverctl              entry point (bash shim → serverctl.py)
+serverctl.py           start/stop/adopt/health/status (stdlib only)
+engines.py             engine façade (mlx_vlm / ollama)
+catalog.py             catalog resolve / sync / measure (stdlib at import)
+catalog_seed.list      user-managed model addresses
+catalog_tiers.yml      user-managed RAM tiers + overrides
+catalog.json           machine-managed measured facts (do not edit)
+catalog_settings.yml   hybrid: CLI-managed index + per-model config
+config.json            infra + legacy fallback (created on first run)
+profile.json           machine profile (created by setup / `serverctl profile`)
+requirements.lock      exact package versions (uv pip freeze)
+.venv/                 Python 3.12 venv with mlx-vlm (not versioned)
+.server.pid            PID of a server started by serverctl (not versioned)
 ```
 
 The models live next door, in `../models/`.
@@ -48,15 +67,21 @@ takes precedence; delete it and re-run setup to switch to the runtime.
 ## Usage
 
 ```bash
-./serverctl start           # start the server (loading the model takes ~40s)
-./serverctl stop            # SIGTERM, SIGKILL after 20s, port cleanup
+./serverctl start                 # start the server (loading the model takes ~40s)
+./serverctl stop                  # SIGTERM, SIGKILL after 20s, port cleanup
 ./serverctl toggle
-./serverctl backend         # print the active backend (mlx or ollama)
-./serverctl backend ollama  # switch backend; restarts the server if it was up
-./serverctl status          # human-readable state
-./serverctl status --json   # machine-readable (what the menu bar app polls)
-./serverctl health          # exit 0 if /health responds
-./serverctl log             # tail -f the server log
+./serverctl engine                # print the active engine (mlx_vlm or ollama)
+./serverctl engine ollama         # switch serving process; restarts if it was up
+./serverctl backend               # deprecated alias of `engine` (`mlx` → mlx_vlm)
+./serverctl catalog list
+./serverctl catalog sync          # apply catalog_seed.list
+./serverctl catalog validate
+./serverctl catalog measure <id>
+./serverctl profile               # re-detect chip / RAM / disk
+./serverctl status                # human-readable state
+./serverctl status --json         # machine-readable (what the menu bar app polls)
+./serverctl health                # exit 0 if /health responds
+./serverctl log                   # tail -f the server log
 ```
 
 States: `running` (port listening and `/health` responding), `starting`
@@ -69,11 +94,63 @@ marks it as external).
 
 ## Configuration
 
-`config.json`, created with defaults on first run:
+### Model catalog
+
+Four files live next to `config.json` (repo checkout: `server/`; installed
+builds: `~/Library/Application Support/Quickbot/`):
+
+| File | Who writes it | Role |
+|---|---|---|
+| `catalog_seed.list` | you | Addresses, one per line (`hf:` default, or `ollama:`). Draft/MTP models are **not** seed entries — they hang off the settings block's `decoder`. |
+| `catalog_tiers.yml` | you | RAM tiers (8/16/32 GB), `headroomGB`, and overrides that apply **last**. |
+| `catalog.json` | `serverctl` | Measured facts (weights, peak GB, tok/s, capabilities). Read-only. |
+| `catalog_settings.yml` | hybrid | The `index:` region between the `QUICKBOT-INDEX` markers is rewritten by `catalog sync`. Everything under `models:` is yours. A leading `*` in the index pins that model for auto-selection. |
+
+**Precedence** (later wins): engine defaults < `catalog.json` facts < the
+per-model settings block < the tier's `overrides`. `catalog validate` warns
+on every clamp. Duplicate pins in a tier fail gracefully: the first `*` wins
+and the rest warn (like conflicting CSS `!important`).
+
+Resolution runs on every `start` / `status` (no cache). The largest tier at
+or below the machine's RAM is chosen; if that tier has no pin, it falls
+through to the next smaller one (32→16→8). If every tier is empty, behaviour
+is the legacy `config.json` path. A single trace line is appended to the
+server log:
+
+```
+resolved: tier=32 pin=hf:mlx-community/Qwen3.8-27B-4bit engine=mlx_vlm ctx=30720
+```
+
+Shipped pins (Qwen3.8 has no size below 27B; smaller tiers use the previous Qwen3.5 generation, same `qwen3_5` architecture, MLX 4-bit + MTP):
+
+| RAM tier | Auto-selected model | Weights |
+|---|---|---|
+| 32 GB | `Qwen3.8-27B-4bit` + MTP | ~16 GB |
+| 16 GB | `Qwen3.5-9B-MLX-4bit` + MTP | ~6 GB |
+| 8 GB | `Qwen3.5-4B-MLX-4bit` + MTP | ~3 GB |
+
+Unmeasured models (added by `sync`, not yet `measure`d) get
+`estPeak = weightsGB * 1.2 + 2.0` from the Hugging Face API and are inserted
+into every tier where that estimate plus headroom still fits.
+
+`catalog measure` / `validate --live` / a measuring `sync` offload the stack
+first (`DATA_DIR/.catalog-operation.json`). The menu bar shows **"Quickbot
+unavailable during catalog operations"** and disables the switch until the
+command finishes (or, after a `kill -9`, until the next `status` notices the
+dead pid and drops the stale marker).
+
+### `config.json`
+
+Created with defaults on first run. **While the catalog is active** these keys
+are ignored (the catalog supplies them): `model`, `draftModel`, `executable`,
+`backend` (leftover alias of the engine id), `envVars`, `extraArgs`. These **stay live**:
+
+- `port` / `proxyPort` / `host` / `webSearch` / `logFile` / `stopServerOnQuit`
+- `ollamaExecutable` / `ollamaPort` / `ollamaEnvVars`
 
 ```json
 {
-  "backend": "mlx",
+  "backend": "mlx_vlm",
   "executable": ".../server/.venv/bin/mlx_vlm.server",
   "model": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-4bit",
   "draftModel": "~/Devland/_experimental/quickbot/models/Qwen3.8-27B-MTP-4bit",
@@ -91,9 +168,13 @@ marks it as external).
 }
 ```
 
-- `backend`: `mlx` or `ollama` — switch with `serverctl backend <name>`.
-  With `ollama`, run `serverctl setup` once to pull `ollamaModel` (~18 GB).
+- `backend`: leftover alias of the engine id (`mlx_vlm` or `ollama`). Old
+  files may still say `"mlx"`; that means `mlx_vlm`. Switch with
+  `serverctl engine <name>` (`backend` is the same command). With the catalog
+  active the engine is set per model in `catalog_settings.yml`; this command
+  only updates the leftover fallback. Both values are MLX serving processes.
 - `extraArgs`: additional `mlx_vlm.server` flags, e.g. `["--max-tokens", "4096"]`
+  (legacy path only; catalog models use the settings block's `extraArgs`).
 - `envVars`: extra environment variables for `mlx_vlm.server`. `APC_ENABLED=1`
   enables prompt caching — without it the server redoes the full system prompt
   prefill on every request (~110s for 13k tokens).
@@ -103,16 +184,21 @@ marks it as external).
 - `stopServerOnQuit`: if `true`, quitting the menu bar app also stops the
   server (default `false`, so the model isn't taken down by accident).
 
+`mlx_vlm.server` accepts `--max-kv-size` (KV cache in tokens). When the
+catalog is active, `contextLength` is passed through that flag; on ollama it
+maps to `OLLAMA_CONTEXT_LENGTH`. On the legacy path the flag is omitted, so
+start/stop behaviour is unchanged.
+
 ## Connecting a client
 
 The server exposes an OpenAI-compatible API at `http://127.0.0.1:8080/v1`
 (no API key). Two things to keep in mind when pointing a client at it:
 
-1. **The model name must be the full path** (mlx backend). `mlx_vlm.server`
+1. **The model name must be the full path** (mlx_vlm engine). `mlx_vlm.server`
    uses that field as the load path; a short name like `Qwen3.8-27B-4bit`
    makes it try to download from HuggingFace and fail with a 401. Use
    `/Users/danieldrehmer/Devland/_experimental/quickbot/models/Qwen3.8-27B-4bit`.
-   On the ollama backend the model name is the registry tag instead
+   On the ollama engine the model name is the MLX registry tag instead
    (`qwen3.8:27b-mlx`) — clients should always take the name from
    `GET /v1/models` rather than hardcode it.
 2. **Maximum context window of 32768 on this machine.** The model accepts

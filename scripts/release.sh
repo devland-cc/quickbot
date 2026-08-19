@@ -37,6 +37,9 @@ SERVER_DEST="$STAGING/Quickbot.app/Contents/Resources/server"
 mkdir -p "$SERVER_DEST"
 cp "$ROOT/server/serverctl" "$ROOT/server/serverctl.py" \
    "$ROOT/server/toolproxy.py" "$ROOT/server/websearch.py" \
+   "$ROOT/server/catalog.py" "$ROOT/server/engines.py" \
+   "$ROOT/server/catalog_seed.list" "$ROOT/server/catalog_tiers.yml" \
+   "$ROOT/server/catalog_settings.yml" "$ROOT/server/catalog.json" \
    "$ROOT/server/requirements.lock" "$ROOT/server/README.md" "$SERVER_DEST/"
 
 echo "==> Compiling webkit-fetch (web search helper)"

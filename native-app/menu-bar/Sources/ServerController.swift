@@ -41,6 +41,9 @@ struct ServerStatus: Decodable {
     var configFile: String
     var logFile: String
     var stopServerOnQuit: Bool
+    /// Non-nil while `serverctl catalog measure|sync|validate --live` has
+    /// the stack offloaded. Optional so older JSON still decodes.
+    var catalogOperation: String?
 }
 
 /// Location of the decoupled server component.
@@ -79,6 +82,11 @@ final class ServerController {
     private(set) var status: ServerStatus?
 
     var onStateChange: ((ServerState) -> Void)?
+
+    /// Fired on the main queue when `catalogOperation` appears, changes, or
+    /// clears. Needed because the 3s poll only repaints the menu on a
+    /// server-state change, and catalog ops happen while the server is stopped.
+    var onCatalogOperationChange: ((String?) -> Void)?
 
     // MARK: - Internals
 
@@ -193,7 +201,12 @@ final class ServerController {
 
     private func pollStatus() {
         guard let snapshot = fetchStatus() else { return }
+        let previousOp = status?.catalogOperation
         status = snapshot
+        if snapshot.catalogOperation != previousOp {
+            let op = snapshot.catalogOperation
+            DispatchQueue.main.async { self.onCatalogOperationChange?(op) }
+        }
 
         switch snapshot.state {
         case "running":

@@ -1,0 +1,10 @@
+# Quickbot model manifest. One address per line.
+# Schemes: hf: (default when omitted), ollama:
+#
+# Qwen3.8 only shipped a 27B dense model (plus Qwen3.8-Max, which is not
+# local). Smaller RAM tiers use Qwen3.5 4B / 9B: same qwen3_5 architecture,
+# MLX 4-bit, with matching MTP drafters.
+hf:mlx-community/Qwen3.8-27B-4bit
+hf:mlx-community/Qwen3.5-9B-MLX-4bit
+hf:mlx-community/Qwen3.5-4B-MLX-4bit
+ollama:qwen3.8:27b-mlx

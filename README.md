@@ -36,7 +36,7 @@ When Quickbot is off, both shortcuts open the menu bar menu instead.
 ```sh
 brew tap devland-cc/tap
 brew install --cask quickbot
-quickbot setup   # downloads the models (~16 GB)
+quickbot setup   # profiles this Mac and downloads the model that fits
 ```
 
 The apps are ad-hoc signed, not notarized; the cask removes the macOS
@@ -45,20 +45,26 @@ quarantine flag after install so Gatekeeper lets them run.
 Nothing is installed on your system besides the two apps and the `quickbot`
 command: the inference server runs on a private Python runtime bundled
 inside the app, unpacked into `~/Library/Application Support/Quickbot` on
-first run. `quickbot setup` downloads the models from their original Hugging
-Face repositories ([mlx-community/Qwen3.8-27B-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit)
-and [mlx-community/Qwen3.8-27B-MTP-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-4bit))
-into `~/Library/Application Support/Quickbot/models`, next to that runtime
-and the server config. Interrupted downloads resume on re-run.
+first run. `quickbot setup` profiles the machine (Apple silicon, RAM, disk)
+and downloads the matching MLX model into
+`~/Library/Application Support/Quickbot/models`:
+
+| RAM | Model | Download |
+|---|---|---|
+| 32 GB+ | [Qwen3.8-27B-4bit](https://huggingface.co/mlx-community/Qwen3.8-27B-4bit) + MTP | ~16 GB |
+| 16 GB | [Qwen3.5-9B-MLX-4bit](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit) + MTP | ~6 GB |
+| 8 GB | [Qwen3.5-4B-MLX-4bit](https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-4bit) + MTP | ~3 GB |
+
+Interrupted downloads resume on re-run.
 
 Then launch **Quickbot** from `/Applications` and flip the switch in the menu
 bar.
 
 ### Requirements
 
-- Apple silicon Mac with enough unified memory for the model (~16 GB of
-  weights; 24 GB+ of RAM recommended)
+- Apple silicon Mac (Intel is not supported)
 - macOS 14 (Sonoma) or newer
+- 8 GB RAM minimum; 16 GB+ recommended
 
 ## Repository layout
 

@@ -1,0 +1,7 @@
+# headroomGB = memory kept free for the OS + apps.
+# overrides apply LAST to any model served in that tier (they win;
+# `catalog validate` warns when a value gets clamped).
+tiers:
+  8:  { headroomGB: 3, overrides: { contextLength: 8192, promptCache: false } }
+  16: { headroomGB: 3, overrides: { contextLength: 16384 } }
+  32: { headroomGB: 4, overrides: {} }

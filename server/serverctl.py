@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Quickbot server controller.
 
-Owns the whole mlx_vlm.server lifecycle: start, stop, adoption of externally
-started servers, health checks and status reporting. Every other component
-(menu bar app, CLI) drives the server exclusively through this script.
+Owns the whole inference-server lifecycle: start, stop, adoption of externally
+started servers, health checks, status reporting, and the model catalog.
+Every other component (menu bar app, CLI) drives the server exclusively
+through this script.
 
-Usage: serverctl {setup|start|stop|toggle|backend [mlx|ollama]|status [--json]|health|log}
+Usage: serverctl {setup|start|stop|toggle|engine [mlx_vlm|ollama]|backend [mlx_vlm|ollama]|catalog {sync|validate|measure|list}|profile [--json]|status [--json]|health|log}
 """
 
 import json
@@ -17,6 +18,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+import catalog
+import engines
 
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -71,9 +75,11 @@ MODELS = [
 CLI_NAME = os.environ.get("QUICKBOT_CLI_NAME", "serverctl")
 
 DEFAULT_CONFIG = {
-    # Inference backend: "mlx" runs mlx_vlm.server with the models below,
-    # "ollama" runs `ollama serve` (Ollama's MLX runner) with ollamaModel.
-    "backend": "mlx",
+    # Serving process. Both engines are MLX: "mlx_vlm" is mlx_vlm.server,
+    # "ollama" is ollama serve with the MLX runner. The leftover key
+    # "backend" is an alias of the engine id; the old spelling "mlx"
+    # still maps to mlx_vlm.
+    "backend": "mlx_vlm",
     "executable": os.path.join(env_bin_dir(), "mlx_vlm.server"),
     "model": os.path.join(MODELS_DIR, MODELS[0]["dir"]),
     "draftModel": os.path.join(MODELS_DIR, MODELS[1]["dir"]),
@@ -120,21 +126,12 @@ def save_config(cfg):
         f.write("\n")
 
 
-BACKENDS = ("mlx", "ollama")
-
-
-def backend_name(cfg):
-    name = cfg.get("backend", "mlx")
-    return name if name in BACKENDS else "mlx"
-
-
 def upstream_port(cfg):
-    return cfg.get("ollamaPort", 11434) if backend_name(cfg) == "ollama" else cfg["port"]
+    return engines.get_engine(cfg).upstream_port()
 
 
 def health_path(cfg):
-    # Ollama has no /health; its root answers "Ollama is running".
-    return "/" if backend_name(cfg) == "ollama" else cfg["healthPath"]
+    return engines.get_engine(cfg).health_path()
 
 
 def log_file(cfg):
@@ -160,58 +157,7 @@ def proxy_endpoint(cfg):
 
 
 def server_command(cfg):
-    if backend_name(cfg) == "ollama":
-        return [find_ollama(cfg) or expand(cfg["ollamaExecutable"]), "serve"]
-    cmd = [expand(cfg["executable"]), "--model", expand(cfg["model"])]
-    draft = cfg.get("draftModel")
-    if draft:
-        cmd += ["--draft-model", expand(draft)]
-    cmd += ["--port", str(cfg["port"])]
-    cmd += cfg.get("extraArgs", [])
-    return cmd
-
-
-# --- Ollama backend helpers -----------------------------------------------
-
-
-def find_ollama(cfg):
-    exe = expand(cfg.get("ollamaExecutable") or "")
-    if os.access(exe, os.X_OK):
-        return exe
-    return shutil.which("ollama")
-
-
-def ollama_env(cfg):
-    env = dict(os.environ)
-    env["OLLAMA_HOST"] = "{}:{}".format(cfg["host"], cfg.get("ollamaPort", 11434))
-    env.update(cfg.get("ollamaEnvVars") or {})
-    return env
-
-
-def ollama_model_present(cfg):
-    """Whether ollamaModel has been pulled, checked via its manifest file
-    (`ollama list` needs a running server, which we may not have yet)."""
-    name = cfg.get("ollamaModel", "")
-    model, _, tag = name.partition(":")
-    models_dir = ((cfg.get("ollamaEnvVars") or {}).get("OLLAMA_MODELS")
-                  or os.path.expanduser("~/.ollama/models"))
-    manifest = os.path.join(models_dir, "manifests/registry.ollama.ai/library",
-                            model, tag or "latest")
-    return os.path.exists(manifest)
-
-
-def warm_ollama(cfg):
-    """Ollama loads the model on the first request; fire a detached load
-    request so the first chat prompt does not pay the ~30s load."""
-    url = "http://{}:{}".format(cfg["host"], upstream_port(cfg))
-    body = json.dumps({"model": cfg["ollamaModel"],
-                       "keep_alive": (cfg.get("ollamaEnvVars") or {})
-                       .get("OLLAMA_KEEP_ALIVE", "1h")})
-    script = ("until curl -s -m 2 {url}/ >/dev/null 2>&1; do sleep 1; done; "
-              "curl -s -m 600 -X POST -d '{body}' {url}/api/generate "
-              ">/dev/null 2>&1").format(url=url, body=body)
-    subprocess.Popen(["/bin/sh", "-c", script], stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return engines.get_engine(cfg).server_command()
 
 
 # --- Process inspection ---------------------------------------------------
@@ -358,50 +304,32 @@ def stop_proxy(cfg):
 
 
 def cmd_start(cfg):
+    try:
+        cfg, trace = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     state, pid, _ = current_state(cfg)
     if state != "stopped":
         start_proxy(cfg)  # heal a missing proxy next to a live server
         print("Server already {} (PID {}).".format(state, pid))
         return 0
 
-    setup_hint = "Run `{} setup` to install it.".format(CLI_NAME)
-    if backend_name(cfg) == "ollama":
-        if find_ollama(cfg) is None:
-            print("ollama not found. Install it (`brew install ollama`).",
-                  file=sys.stderr)
-            return 1
-        if not ollama_model_present(cfg):
-            print("Ollama model not pulled: {}\n{}".format(cfg["ollamaModel"],
-                                                           setup_hint),
-                  file=sys.stderr)
-            return 1
-    else:
-        exe = expand(cfg["executable"])
-        if not os.access(exe, os.X_OK):
-            print("Executable not found:\n{}\n{}".format(exe, setup_hint), file=sys.stderr)
-            return 1
-        model = expand(cfg["model"])
-        if not os.path.exists(model):
-            print("Model not found:\n{}\n{}".format(model, setup_hint), file=sys.stderr)
-            return 1
-        draft = cfg.get("draftModel")
-        if draft and not os.path.exists(expand(draft)):
-            print("Draft model not found:\n{}\n{}".format(expand(draft), setup_hint),
-                  file=sys.stderr)
-            return 1
+    eng = engines.get_engine(cfg)
+    reason = eng.missing_reason()
+    if reason:
+        print(reason, file=sys.stderr)
+        return 1
 
-    cmd = server_command(cfg)
+    cmd = eng.server_command()
     log = log_file(cfg)
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     with open(log, "a") as lf:
         lf.write("\n===== Quickbot start {} =====\n{}\n".format(stamp, " ".join(cmd)))
+        if trace:
+            lf.write("{}\n".format(trace))
 
-    if backend_name(cfg) == "ollama":
-        env = ollama_env(cfg)
-    else:
-        env = dict(os.environ)
-        env.update(cfg.get("envVars") or {})
-    env["PYTHONUNBUFFERED"] = "1"
+    env = eng.env()
 
     with open(log, "ab") as lf:
         proc = subprocess.Popen(
@@ -411,14 +339,18 @@ def cmd_start(cfg):
     with open(PID_FILE, "w") as f:
         f.write(str(proc.pid))
     start_proxy(cfg)
-    if backend_name(cfg) == "ollama":
-        warm_ollama(cfg)
+    eng.post_start()
     print("Starting {} server (PID {}). Loading the model takes ~40s."
-          .format(backend_name(cfg), proc.pid))
+          .format(engines.engine_name(cfg), proc.pid))
     return 0
 
 
 def cmd_stop(cfg):
+    try:
+        cfg, _ = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     stop_proxy(cfg)
     state, target, _ = current_state(cfg)
     if target is None:
@@ -466,48 +398,80 @@ def _remove_pidfile():
 
 
 def cmd_toggle(cfg):
+    try:
+        cfg, _ = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     state, _, _ = current_state(cfg)
     return cmd_stop(cfg) if state in ("running", "starting") else cmd_start(cfg)
 
 
-def cmd_backend(cfg, args):
-    current = backend_name(cfg)
+def cmd_engine(cfg, args, via_backend=False):
+    current_engine = engines.engine_name(cfg)
     if not args:
-        print(current)
+        print(current_engine)
         return 0
     choice = args[0]
-    if choice not in BACKENDS:
-        print("usage: {} backend [{}]".format(CLI_NAME, "|".join(BACKENDS)),
+    if choice == "mlx":
+        choice = "mlx_vlm"
+    if choice not in engines.ENGINES:
+        print("usage: {} {} [{}]".format(
+            CLI_NAME, "backend" if via_backend else "engine",
+            "|".join(engines.ENGINES)),
               file=sys.stderr)
         return 2
-    if choice == current:
-        print("Backend already {}.".format(choice))
+    engine = choice
+    if engine == current_engine:
+        print("Engine already {}.".format(engine))
         return 0
-    state, _, _ = current_state(cfg)
+    if catalog.catalog_active():
+        print("Note: with the catalog active, the engine is set per model "
+              "in catalog_settings.yml. Updating config.json for the legacy "
+              "fallback only.")
+    try:
+        effective, _ = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
+    state, _, _ = current_state(effective)
     was_up = state != "stopped"
     if was_up:
-        cmd_stop(cfg)  # stop the old backend before the ports change meaning
-    cfg["backend"] = choice
+        cmd_stop(effective)  # stop the old engine before the ports change meaning
+    cfg["engine"] = engine
+    cfg["backend"] = engine  # leftover key; same value as engine, both are MLX
     save_config(cfg)
-    print("Backend set to {}.".format(choice))
-    return cmd_start(cfg) if was_up else 0
+    print("Engine set to {}.".format(engine))
+    return cmd_start(load_config()) if was_up else 0
+
+
+def cmd_backend(cfg, args):
+    return cmd_engine(cfg, args, via_backend=True)
 
 
 def cmd_status(cfg, as_json):
+    try:
+        cfg, _ = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     state, pid, adopted = current_state(cfg)
     started = process_start_epoch(pid) if pid is not None else None
-    if backend_name(cfg) == "ollama":
-        model_name = model_path = cfg["ollamaModel"]
+    if engines.engine_name(cfg) == "ollama":
+        model_name = model_path = cfg.get("ollamaModel") or cfg.get("model")
         draft = None
     else:
         model_path = expand(cfg["model"])
         model_name = os.path.basename(model_path.rstrip("/"))
         draft = cfg.get("draftModel")
+    op = catalog.current_operation()
+    engine = engines.engine_name(cfg)
     info = {
         "state": state,
         "pid": pid,
         "adopted": adopted,
-        "backend": backend_name(cfg),
+        "engine": engine,
+        "backend": engine,  # deprecated alias of engine; never "mlx" vs "ollama"
         "startedAtEpoch": started,
         "modelName": model_name,
         "modelPath": model_path,
@@ -517,6 +481,9 @@ def cmd_status(cfg, as_json):
         "configFile": CONFIG_FILE,
         "logFile": log_file(cfg),
         "stopServerOnQuit": bool(cfg.get("stopServerOnQuit", False)),
+        "catalogOperation": (op or {}).get("label") if op else None,
+        "tier": cfg.get("tier"),
+        "displayName": cfg.get("displayName"),
     }
     if as_json:
         print(json.dumps(info))
@@ -530,7 +497,9 @@ def cmd_status(cfg, as_json):
         h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
         up = "{}h {:02d}min".format(h, m) if h else ("{}min {:02d}s".format(m, s) if m else "{}s".format(s))
         print("Uptime:   {}".format(up))
-    print("Backend:  {}".format(info["backend"]))
+    if info["catalogOperation"]:
+        print("Catalog:  {}".format(info["catalogOperation"]))
+    print("Engine:   {}".format(info["engine"]))
     print("Model:    {}".format(info["modelName"]))
     print("Endpoint: {}".format(info["endpoint"]))
     print("Config:   {}".format(info["configFile"]))
@@ -659,32 +628,7 @@ def _setup_models():
 
 
 def _setup_ollama(cfg):
-    exe = find_ollama(cfg)
-    if exe is None:
-        print("ollama not found. Install it (`brew install ollama`), then "
-              "re-run `{} setup`.".format(CLI_NAME), file=sys.stderr)
-        return 1
-    if ollama_model_present(cfg):
-        print("==> Ollama model {} already present, skipping".format(cfg["ollamaModel"]))
-        return 0
-    # `ollama pull` talks to a running server; start a temporary one if needed.
-    started = None
-    env = ollama_env(cfg)
-    if listening_pid(cfg.get("ollamaPort", 11434)) is None:
-        started = subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, env=env,
-                                   start_new_session=True)
-        deadline = time.time() + 30
-        while time.time() < deadline and not health_ok(cfg):
-            time.sleep(0.5)
-    print("==> Pulling {} (~18 GB) from the Ollama registry".format(cfg["ollamaModel"]))
-    code = subprocess.call([exe, "pull", cfg["ollamaModel"]], env=env)
-    if started is not None:
-        started.terminate()
-    if code != 0:
-        print("Pull failed for {}. Re-run `{} setup` to resume."
-              .format(cfg["ollamaModel"], CLI_NAME), file=sys.stderr)
-    return code
+    return engines.get_engine(cfg).ensure_model()
 
 
 def cmd_setup(args):
@@ -693,9 +637,21 @@ def cmd_setup(args):
     code = _setup_python()
     if code != 0:
         return code
+    catalog.seed_defaults()
     cfg = load_config()  # writes the default config on first run
+    try:
+        if catalog.yaml_available():
+            catalog.require_apple_silicon(catalog.system_profile(force=True))
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     if not skip_models:
-        if backend_name(cfg) == "ollama":
+        effective, trace = catalog.resolve(cfg)
+        if trace:
+            print(trace)
+        if effective.get("catalogIdentity"):
+            code = engines.get_engine(effective).ensure_model()
+        elif engines.engine_name(cfg) == "ollama":
             code = _setup_ollama(cfg)
         else:
             code = _setup_models()
@@ -710,6 +666,11 @@ def cmd_setup(args):
 
 
 def cmd_health(cfg):
+    try:
+        cfg, _ = catalog.resolve(cfg)
+    except catalog.CatalogError as e:
+        print(e, file=sys.stderr)
+        return 1
     ok = health_ok(cfg)
     print("healthy" if ok else "unhealthy")
     return 0 if ok else 1
@@ -723,6 +684,10 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "setup":
         return cmd_setup(sys.argv[2:])
+    if cmd == "profile":
+        return catalog.cmd_profile(sys.argv[2:])
+    if cmd == "catalog":
+        return catalog.cmd_catalog(sys.argv[2:])
     cfg = load_config()
     if cmd in ("start", "on"):
         return cmd_start(cfg)
@@ -730,6 +695,8 @@ def main():
         return cmd_stop(cfg)
     if cmd == "toggle":
         return cmd_toggle(cfg)
+    if cmd == "engine":
+        return cmd_engine(cfg, sys.argv[2:])
     if cmd == "backend":
         return cmd_backend(cfg, sys.argv[2:])
     if cmd == "status":
@@ -738,9 +705,13 @@ def main():
         return cmd_health(cfg)
     if cmd == "log":
         return cmd_log(cfg)
-    print("usage: {} {{setup|start|stop|toggle|backend [mlx|ollama]|status [--json]|health|log}}"
+    print("usage: {} {{setup|start|stop|toggle|engine [mlx_vlm|ollama]|backend [mlx_vlm|ollama]|catalog {{sync|validate|measure|list}}|profile [--json]|status [--json]|health|log}}"
           .format(CLI_NAME), file=sys.stderr)
     return 2
+
+
+engines.bind(sys.modules[__name__])
+catalog.bind(sys.modules[__name__])
 
 
 if __name__ == "__main__":

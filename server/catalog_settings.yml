@@ -1,0 +1,65 @@
+# Quickbot model settings.
+# The INDEX between the markers is rewritten by `serverctl catalog sync`.
+# Everything under `models:` is yours to tweak.
+
+# >>> QUICKBOT-INDEX BEGIN (managed by `serverctl catalog sync`) <<<
+index:
+  8:
+    - "*hf:mlx-community/Qwen3.5-4B-MLX-4bit"   # * = pinned (auto-selected)
+  16:
+    - "*hf:mlx-community/Qwen3.5-9B-MLX-4bit"   # * = pinned (auto-selected)
+    - "hf:mlx-community/Qwen3.5-4B-MLX-4bit"
+  32:
+    - "*hf:mlx-community/Qwen3.8-27B-4bit"   # * = pinned (auto-selected)
+    - "hf:mlx-community/Qwen3.5-9B-MLX-4bit"
+    - "hf:mlx-community/Qwen3.5-4B-MLX-4bit"
+# >>> QUICKBOT-INDEX END <<<
+
+models:
+  # --- quickbot-model: hf:mlx-community/Qwen3.8-27B-4bit ---
+  "hf:mlx-community/Qwen3.8-27B-4bit":
+    displayName: "Qwen3.8 27B"
+    engine: mlx_vlm            # mlx_vlm | ollama
+    contextLength: 30720
+    decoder: { kind: mtp, draft: "hf:mlx-community/Qwen3.8-27B-MTP-4bit" }  # mtp | draft | none
+    promptCache: true          # APC_ENABLED
+    kvCacheQuant: null
+    capabilities: { vision: true, tools: true, thinking: true }  # can only DISABLE what catalog.json grants
+    envVars: {}
+    extraArgs: []
+
+  # --- quickbot-model: hf:mlx-community/Qwen3.5-9B-MLX-4bit ---
+  "hf:mlx-community/Qwen3.5-9B-MLX-4bit":
+    displayName: "Qwen3.5 9B"
+    engine: mlx_vlm
+    contextLength: 32768
+    decoder: { kind: mtp, draft: "hf:mlx-community/Qwen3.5-9B-MTP-4bit" }
+    promptCache: true
+    kvCacheQuant: null
+    capabilities: { vision: true, tools: true, thinking: true }
+    envVars: {}
+    extraArgs: []
+
+  # --- quickbot-model: hf:mlx-community/Qwen3.5-4B-MLX-4bit ---
+  "hf:mlx-community/Qwen3.5-4B-MLX-4bit":
+    displayName: "Qwen3.5 4B"
+    engine: mlx_vlm
+    contextLength: 32768
+    decoder: { kind: mtp, draft: "hf:mlx-community/Qwen3.5-4B-MTP-4bit" }
+    promptCache: true
+    kvCacheQuant: null
+    capabilities: { vision: true, tools: true, thinking: true }
+    envVars: {}
+    extraArgs: []
+
+# --- quickbot-model: ollama:qwen3.8:27b-mlx ---
+  "ollama:qwen3.8:27b-mlx":
+    displayName: "Qwen3.8 27B (Ollama)"
+    engine: ollama
+    contextLength: 30720
+    decoder: { kind: none }
+    promptCache: true
+    kvCacheQuant: null
+    capabilities: { vision: true, tools: true, thinking: true }
+    envVars: {}
+    extraArgs: []

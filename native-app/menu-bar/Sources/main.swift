@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let endpointItem = NSMenuItem()
     /// Startup progress ("Loading model (42%)", "Loading chat interface").
     private let statusLine = NSMenuItem()
+    /// Shown while `serverctl` holds the catalog-operation marker.
+    private let catalogNoticeItem = NSMenuItem()
 
     private var menuRefreshTimer: Timer?
 
@@ -51,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let server = ServerController()
         server.onStateChange = { [weak self] state in
             self?.render(state)
+        }
+        server.onCatalogOperationChange = { [weak self] _ in
+            self?.refreshMenuTexts()
         }
         controller = server
 
@@ -131,6 +136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusLine.isEnabled = false
         statusLine.isHidden = true
         menu.addItem(statusLine)
+
+        catalogNoticeItem.isEnabled = false
+        catalogNoticeItem.isHidden = true
+        menu.addItem(catalogNoticeItem)
 
         menu.addItem(.separator())
 
@@ -355,9 +364,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // flipping it off cancels the startup). Setting isOn in code does
         // not fire the action. The green accent waits for everything to be
         // actually loaded.
+        let catalogOp = controller?.status?.catalogOperation
         toggleSwitch.isOn = (state == .running || state == .starting)
-        toggleSwitch.isEnabled = state != .stopping
+        toggleSwitch.isEnabled = state != .stopping && catalogOp == nil
         toggleSwitch.showsAccent = (state == .running)
+
+        if let label = catalogOp, !label.isEmpty {
+            catalogNoticeItem.attributedTitle = NSAttributedString(
+                string: "Quickbot unavailable during catalog operations",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 12),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ])
+            catalogNoticeItem.toolTip = label
+            catalogNoticeItem.isHidden = false
+        } else {
+            catalogNoticeItem.isHidden = true
+            catalogNoticeItem.toolTip = nil
+        }
 
         if let text = startupStatusText(state) {
             statusLine.attributedTitle = NSAttributedString(string: text, attributes: [

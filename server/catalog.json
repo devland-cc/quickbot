@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "models": {
+    "hf:mlx-community/Qwen3.8-27B-4bit": {
+      "address": "hf:mlx-community/Qwen3.8-27B-4bit",
+      "scheme": "hf",
+      "name": "Qwen3.8-27B-4bit",
+      "status": "measured",
+      "weightsGB": 16.2,
+      "expectedPeakGB": 25.0,
+      "estimated": false,
+      "performance": {
+        "prefillTokPerSec": 110.0,
+        "decodeTokPerSec": 14.0
+      },
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "thinking": true
+      },
+      "maxModelContext": 262144,
+      "measurement": {
+        "date": "2026-08-19",
+        "engine": "mlx_vlm",
+        "engineVersion": "0.6.13",
+        "contextLength": 30720,
+        "machineProfileHash": "sha256:9ac693f695e7514f48b4b4833411fd2fdf1c433016c71731b05e6d598bb24fd7"
+      }
+    },
+    "hf:mlx-community/Qwen3.5-9B-MLX-4bit": {
+      "address": "hf:mlx-community/Qwen3.5-9B-MLX-4bit",
+      "scheme": "hf",
+      "name": "Qwen3.5-9B-MLX-4bit",
+      "status": "measured",
+      "weightsGB": 6.0,
+      "expectedPeakGB": 7.8,
+      "estimated": false,
+      "performance": {
+        "prefillTokPerSec": 696.1,
+        "decodeTokPerSec": 44.4
+      },
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "thinking": true
+      },
+      "maxModelContext": 262144,
+      "measurement": {
+        "date": "2026-08-19",
+        "engine": "mlx_vlm",
+        "engineVersion": "0.6.13",
+        "contextLength": 32768,
+        "machineProfileHash": "sha256:9ac693f695e7514f48b4b4833411fd2fdf1c433016c71731b05e6d598bb24fd7"
+      }
+    },
+    "hf:mlx-community/Qwen3.5-4B-MLX-4bit": {
+      "address": "hf:mlx-community/Qwen3.5-4B-MLX-4bit",
+      "scheme": "hf",
+      "name": "Qwen3.5-4B-MLX-4bit",
+      "status": "measured",
+      "weightsGB": 3.0,
+      "expectedPeakGB": 4.9,
+      "estimated": false,
+      "performance": {
+        "prefillTokPerSec": 1086.0,
+        "decodeTokPerSec": 92.1
+      },
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "thinking": true
+      },
+      "maxModelContext": 262144,
+      "measurement": {
+        "date": "2026-08-19",
+        "engine": "mlx_vlm",
+        "engineVersion": "0.6.13",
+        "contextLength": 32768,
+        "machineProfileHash": "sha256:9ac693f695e7514f48b4b4833411fd2fdf1c433016c71731b05e6d598bb24fd7"
+      }
+    },
+    "ollama:qwen3.8:27b-mlx": {
+      "address": "ollama:qwen3.8:27b-mlx",
+      "scheme": "ollama",
+      "name": "qwen3.8:27b-mlx",
+      "status": "measured",
+      "weightsGB": null,
+      "expectedPeakGB": 9.6,
+      "estimated": false,
+      "performance": {
+        "prefillTokPerSec": 60.2,
+        "decodeTokPerSec": 20.1
+      },
+      "capabilities": {
+        "vision": true,
+        "tools": true,
+        "thinking": true
+      },
+      "maxModelContext": null,
+      "measurement": {
+        "date": "2026-08-19",
+        "engine": "ollama",
+        "engineVersion": null,
+        "contextLength": 30720,
+        "machineProfileHash": "sha256:9ac693f695e7514f48b4b4833411fd2fdf1c433016c71731b05e6d598bb24fd7"
+      }
+    }
+  }
+}
